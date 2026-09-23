@@ -1,0 +1,27 @@
+# Build output
+[Oo]bj/
+[Bb]in/
+[Dd]ebug/
+[Rr]elease/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# ASP.NET
+appsettings.Local.json
+
+# Test results
+TestResults/
+coverage*.xml
+
+# package
+packages/
+*.nupkg
+
+# OS files
+Thumbs.db
+.DS_Store

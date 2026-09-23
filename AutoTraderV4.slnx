@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/AutoTraderV4/AutoTraderV4.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/AutoTraderV4.Tests/AutoTraderV4.Tests.csproj" />
+  </Folder>
+</Solution>
