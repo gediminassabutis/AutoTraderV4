@@ -65,8 +65,13 @@ dotnet test AutoTraderV4.slnx --nologo
 - `GET /api/account/summary`
 - `POST /api/orders`
 
+## Specialized agents
+
+The repository now includes a set of focused Copilot agents in [.github/agents](.github/agents) to drive the phased implementation described in [plan.md](plan.md): market data, strategy engine, risk governance, dashboard analytics, and QA validation.
+
 ## Notes
 
 - The API uses the Trading 212 demo environment by default.
 - Sell order quantities are represented as negative values, as required by the Trading 212 API contract.
 - Keep secrets out of source control; prefer environment variables or user secrets in production.
+- See [plan.md](plan.md) for the implementation roadmap derived from [AGENTS.md](AGENTS.md).
