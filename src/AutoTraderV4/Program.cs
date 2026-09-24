@@ -1,33 +1,104 @@
-﻿using Microsoft.EntityFrameworkCore;
+using System.Text.Json.Serialization;
+using AutoTraderV4.Services;
+using Microsoft.EntityFrameworkCore;
 
 namespace AutoTraderV4;
 
-public static class Program
+public partial class Program
 {
     public static async Task Main(string[] args)
     {
         var builder = WebApplication.CreateBuilder(args);
+        ConfigureServices(builder);
+
+        var app = builder.Build();
+        ConfigureApp(app);
+        await app.RunAsync();
+    }
+
+    public static void ConfigureServices(WebApplicationBuilder builder, bool includeDatabase = true)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+
+        builder.Services.AddCors(options =>
+        {
+            options.AddPolicy("Default", policy =>
+            {
+                policy.AllowAnyOrigin();
+                policy.AllowAnyHeader();
+                policy.AllowAnyMethod();
+            });
+        });
 
         var trading212Options = builder.Configuration.GetSection("Trading212").Get<Trading212Options>() ?? new Trading212Options();
         builder.Services.AddSingleton(trading212Options);
 
-        builder.Services.AddHttpClient<ITrading212Client, Trading212Client>((sp, client) =>
+        var hasTrading212Credentials = !string.IsNullOrWhiteSpace(trading212Options.ApiKey)
+            && !string.IsNullOrWhiteSpace(trading212Options.ApiSecret);
+        var useDemoData = trading212Options.UseDemoData || !hasTrading212Credentials;
+
+        if (useDemoData)
         {
-            var options = sp.GetRequiredService<Trading212Options>();
-            client.BaseAddress = new Uri(options.BaseUrl.TrimEnd('/') + "/api/v0/");
-        });
+            builder.Services.AddSingleton<ITrading212Client, DemoTrading212Client>();
+        }
+        else
+        {
+            builder.Services.AddHttpClient<ITrading212Client, Trading212Client>((sp, client) =>
+            {
+                var options = sp.GetRequiredService<Trading212Options>();
+                client.BaseAddress = new Uri(options.BaseUrl.TrimEnd('/') + "/api/v0/");
+            });
+        }
 
         builder.Services.AddScoped<IPortfolioRepository, PortfolioRepository>();
         builder.Services.AddScoped<StrategyExecutionService>();
         builder.Services.AddSingleton<MovingAverageStrategyService>();
+        builder.Services.AddScoped<IPortfolioDashboardService, PortfolioDashboardService>();
+        builder.Services.AddSingleton<StrategyEngineService>();
+        builder.Services.AddSingleton<PortfolioRiskService>();
+        builder.Services.AddSingleton<AuditLogService>();
+        builder.Services.AddSingleton(TimeProvider.System);
+        builder.Services.AddScoped<WeightedStrategyEngineService>();
+        builder.Services.AddScoped<RiskGovernanceService>();
+        builder.Services.AddScoped<AuditLoggingService>();
+        builder.Services.AddScoped<PortfolioService>();
 
-        builder.Services.AddDbContext<ApplicationDbContext>(options =>
-            options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+        if (includeDatabase)
+        {
+            var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+            var configuredUseInMemory = builder.Configuration.GetValue<bool?>("Database:UseInMemory")
+                ?? builder.Configuration.GetValue<bool?>("UseInMemoryDatabase");
+            var useInMemoryDatabase = configuredUseInMemory ?? (useDemoData || string.IsNullOrWhiteSpace(connectionString));
+
+            if (useInMemoryDatabase)
+            {
+                var databaseName = builder.Configuration.GetValue<string>("Database:InMemoryDatabaseName") ?? "AutoTraderV4_Test";
+                builder.Services.AddDbContext<ApplicationDbContext>(options =>
+                    options.UseInMemoryDatabase(databaseName));
+            }
+            else
+            {
+                var resolvedConnectionString = connectionString
+                    ?? "Host=localhost;Database=autotrader_v4;Username=postgres;Password=postgres";
+
+                builder.Services.AddDbContext<ApplicationDbContext>(options =>
+                    options.UseNpgsql(resolvedConnectionString));
+            }
+        }
 
         builder.Services.AddEndpointsApiExplorer();
         builder.Services.AddSwaggerGen();
+        builder.Services.ConfigureHttpJsonOptions(options =>
+        {
+            options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
+        });
+    }
 
-        var app = builder.Build();
+    public static void ConfigureApp(WebApplication app)
+    {
+        ArgumentNullException.ThrowIfNull(app);
+
+        app.UseCors("Default");
 
         if (app.Environment.IsDevelopment())
         {
@@ -35,7 +106,41 @@ public static class Program
             app.UseSwaggerUI();
         }
 
+        app.UseDefaultFiles();
+        app.UseStaticFiles();
+
         app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+
+        app.MapGet("/api/dashboard", async (IPortfolioDashboardService dashboardService, CancellationToken cancellationToken) =>
+        {
+            return Results.Ok(await dashboardService.GetDashboardAsync(cancellationToken));
+        });
+
+        app.MapGet("/api/dashboard/summary", async (IPortfolioDashboardService dashboardService, CancellationToken cancellationToken) =>
+        {
+            return Results.Ok(await dashboardService.GetSummaryAsync(cancellationToken));
+        });
+
+        app.MapGet("/api/watchlist", (StrategyEngineService strategyEngineService) =>
+        {
+            return Results.Ok(strategyEngineService.BuildWatchlist());
+        });
+
+        app.MapGet("/api/risk/summary", async (IPortfolioDashboardService dashboardService, PortfolioRiskService riskService, CancellationToken cancellationToken) =>
+        {
+            var dashboard = await dashboardService.GetDashboardAsync(cancellationToken);
+            return Results.Ok(riskService.Evaluate(dashboard));
+        });
+
+        app.MapGet("/api/audit-log", (AuditLogService auditLogService) =>
+        {
+            return Results.Ok(auditLogService.GetRecent());
+        });
+
+        app.MapGet("/api/audit-logs", async (string? symbol, int? take, AuditLoggingService auditLoggingService, CancellationToken cancellationToken) =>
+        {
+            return Results.Ok(await auditLoggingService.GetRecentAsync(symbol, take ?? 50, cancellationToken));
+        });
 
         app.MapGet("/api/account/summary", async (ITrading212Client client, CancellationToken cancellationToken) =>
         {
@@ -49,6 +154,43 @@ public static class Program
             return Results.Ok(positions);
         });
 
+        app.MapGet("/api/portfolio", async (PortfolioService portfolioService, CancellationToken cancellationToken) =>
+        {
+            return Results.Ok(await portfolioService.GetSnapshotAsync(cancellationToken));
+        });
+
+        app.MapPut("/api/portfolio/state", async (UpsertPortfolioStateRequest request, IPortfolioRepository repository, AuditLoggingService auditLoggingService, CancellationToken cancellationToken) =>
+        {
+            var errors = request.Validate();
+            if (errors.Count > 0)
+            {
+                return Results.ValidationProblem(errors);
+            }
+
+            var state = request.ToEntity();
+            await repository.UpsertPortfolioStateAsync(state, cancellationToken);
+            var persistedState = await repository.GetPortfolioStateAsync(cancellationToken) ?? state;
+            var auditEntry = await auditLoggingService.LogPortfolioStateAsync(persistedState, cancellationToken);
+            return Results.Ok(new { state = persistedState, auditLogId = auditEntry.Id });
+        });
+
+        app.MapPut("/api/portfolio/positions/{ticker}", async (string ticker, UpsertPortfolioPositionRequest request, IPortfolioRepository repository, AuditLoggingService auditLoggingService, CancellationToken cancellationToken) =>
+        {
+            request.Ticker = ticker;
+            var errors = request.Validate();
+            if (errors.Count > 0)
+            {
+                return Results.ValidationProblem(errors);
+            }
+
+            var position = request.ToEntity();
+            await repository.UpsertPositionAsync(position, cancellationToken);
+            var persistedPosition = (await repository.GetAllPositionsAsync(cancellationToken))
+                .Single(x => x.Ticker == ticker.Trim().ToUpperInvariant());
+            var auditEntry = await auditLoggingService.LogPortfolioPositionAsync(persistedPosition, cancellationToken);
+            return Results.Ok(new { position = persistedPosition, auditLogId = auditEntry.Id });
+        });
+
         app.MapPost("/api/orders", async (Trading212OrderRequest request, ITrading212Client client, CancellationToken cancellationToken) =>
         {
             var result = await client.PlaceOrderAsync(request, cancellationToken);
@@ -59,7 +201,72 @@ public static class Program
         {
             decision.Validate();
             var request = OrderExecutionService.CreateRequest(decision);
-            return Results.Ok(request);
+            return Results.Ok(new
+            {
+                ticker = request.Ticker,
+                quantity = request.Quantity,
+                type = request.Type.ToString()
+            });
+        });
+
+        app.MapPost("/api/risk/evaluate", async (TradeDecision decision, IPortfolioDashboardService dashboardService, PortfolioRiskService riskService, CancellationToken cancellationToken) =>
+        {
+            var dashboard = await dashboardService.GetDashboardAsync(cancellationToken);
+            var result = riskService.Evaluate(dashboard, decision);
+            return Results.Ok(result);
+        });
+
+        app.MapPost("/api/risk/governance/evaluate", async (RiskEvaluationRequest request, RiskGovernanceService riskGovernanceService, AuditLoggingService auditLoggingService, CancellationToken cancellationToken) =>
+        {
+            var errors = request.Validate();
+            if (errors.Count > 0)
+            {
+                return Results.ValidationProblem(errors);
+            }
+
+            var result = await riskGovernanceService.EvaluateAsync(request.CandidateTrade, request.Context, cancellationToken);
+            var auditEntry = await auditLoggingService.LogRiskEvaluationAsync(request.CandidateTrade, request.Context, result, cancellationToken);
+            return Results.Ok(new { risk = result, auditLogId = auditEntry.Id });
+        });
+
+        app.MapPost("/api/strategies/recommend", (RecommendationRequest request, StrategyEngineService strategyEngineService) =>
+        {
+            if (string.IsNullOrWhiteSpace(request.Symbol))
+            {
+                return Results.BadRequest(new { error = "Ticker symbol is required." });
+            }
+
+            var recommendation = strategyEngineService.BuildRecommendation(request.Symbol, request.Price > 0m ? request.Price : 100m);
+            return Results.Ok(recommendation);
+        });
+
+        app.MapPost("/api/strategies/recommendations", async (StrategyEvaluationRequest request, WeightedStrategyEngineService strategyEngineService, RiskGovernanceService riskGovernanceService, AuditLoggingService auditLoggingService, CancellationToken cancellationToken) =>
+        {
+            var errors = request.Validate();
+            if (errors.Count > 0)
+            {
+                return Results.ValidationProblem(errors);
+            }
+
+            var decision = strategyEngineService.Evaluate(request);
+            var riskAssessment = await riskGovernanceService.EvaluateAsync(decision, request.ToRiskContext(), cancellationToken);
+            var auditEntry = await auditLoggingService.LogStrategyEvaluationAsync(request, decision, riskAssessment, cancellationToken);
+
+            return Results.Ok(new StrategyEvaluationResponse
+            {
+                Decision = decision,
+                RiskAssessment = riskAssessment,
+                AuditLogId = auditEntry.Id,
+                EvaluatedAtUtc = auditEntry.CreatedUtc
+            });
+        });
+
+        app.MapPost("/api/trades/audit", (TradeDecision decision, AuditLogService auditLogService, StrategyEngineService strategyEngineService) =>
+        {
+            decision.Validate();
+            var recommendation = strategyEngineService.BuildRecommendation(decision.Ticker, decision.EntryPrice > 0m ? decision.EntryPrice : 100m);
+            auditLogService.Record(decision, decision.TriggeringStrategy, recommendation.SignalScores, recommendation.Rating, "Risk gate passed");
+            return Results.Ok(new { decision, recommendation });
         });
 
         app.MapPost("/api/strategies/evaluate", async (StrategySignal signal, StrategyExecutionService strategyExecutionService, CancellationToken cancellationToken) =>
@@ -77,6 +284,6 @@ public static class Program
             return Results.Ok(new { signal, decision, request = requestBody });
         });
 
-        app.Run();
+        app.MapFallbackToFile("index.html");
     }
 }
