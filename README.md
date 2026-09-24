@@ -7,7 +7,9 @@ A .NET 10 C# trading automation starter for the Trading 212 Public API, backed b
 - Trading 212 API client with Basic Authentication
 - ASP.NET Core Web API endpoints
 - PostgreSQL persistence via Entity Framework Core
-- Unit tests covering auth and order behavior
+- Weighted multi-strategy scoring engine with risk gates
+- Portfolio risk policy and defensive-mode validation
+- Unit tests covering auth, order behavior, and strategy/risk checks
 - Docker Compose setup for local PostgreSQL and pgAdmin
 
 ## Prerequisites
@@ -64,6 +66,9 @@ dotnet test AutoTraderV4.slnx --nologo
 - `GET /health`
 - `GET /api/account/summary`
 - `POST /api/orders`
+- `POST /api/strategies/weighted-score`
+- `POST /api/risk/validate`
+- `GET /api/risk/policy`
 
 ## Specialized agents
 
