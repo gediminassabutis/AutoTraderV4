@@ -61,6 +61,12 @@ public partial class Program
         builder.Services.AddScoped<IPortfolioDashboardService, PortfolioDashboardService>();
         builder.Services.AddSingleton<StrategyEngineService>();
         builder.Services.AddSingleton<AuditLogService>();
+        builder.Services.AddSingleton<IMarketDataProvider, DemoMarketDataProvider>();
+        builder.Services.AddSingleton<IMarketDataProvider, FallbackMarketDataProvider>();
+        builder.Services.AddSingleton<ISentimentProvider, DemoSentimentProvider>();
+        builder.Services.AddSingleton<ISentimentProvider, FallbackSentimentProvider>();
+        builder.Services.AddScoped<MarketDataService>();
+        builder.Services.AddScoped<SentimentService>();
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddScoped<WeightedStrategyEngineService>();
         builder.Services.AddScoped<RiskGovernanceService>();
