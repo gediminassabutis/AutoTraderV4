@@ -244,8 +244,40 @@ public class Trading212ApplicationTests
         Assert.True(score.TradeEligible);
         Assert.True(score.FinalScore >= 75m);
         Assert.Contains("Strong trend confirmation", score.TopFactors);
+        Assert.Equal(WeightedStrategyScoringService.MinimumExecutionScore, 75m);
+        Assert.NotEmpty(score.StrategySignals);
+        Assert.All(score.StrategySignals, signal => Assert.True(signal.Confidence >= 0));
+        Assert.Contains("minimum execution threshold", score.Rationale, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void WeightedStrategyScoringService_GetRating_MapsBandsToExpectedLabels()
+    {
+        Assert.Equal("Strong Sell", WeightedStrategyScoringService.GetRating(39m));
+        Assert.Equal("Sell", WeightedStrategyScoringService.GetRating(54m));
+        Assert.Equal("Hold", WeightedStrategyScoringService.GetRating(64m));
+        Assert.Equal("Buy", WeightedStrategyScoringService.GetRating(79m));
+        Assert.Equal("Strong Buy", WeightedStrategyScoringService.GetRating(80m));
+    }
+
+    [Fact]
+    public void WeightedStrategyScoringService_RejectsExecutionBelowMinimumThreshold()
+    {
+        var service = new WeightedStrategyScoringService();
+
+        var score = service.Evaluate("AAPL_US_EQ", new WeightedStrategyMetrics
+        {
+            TrendScore = 48m,
+            MomentumScore = 42m,
+            MeanReversionScore = 60m,
+            EarningsSurpriseScore = 40m,
+            SentimentScore = 32m
+        });
+
+        Assert.False(score.TradeEligible);
+        Assert.True(score.FinalScore < WeightedStrategyScoringService.MinimumExecutionScore);
+        Assert.Equal("Sell", score.Rating);
+    }
     [Fact]
     public void PortfolioRiskService_EvaluateTrade_RejectsTrade_WhenExposureExceedsPolicy()
     {
