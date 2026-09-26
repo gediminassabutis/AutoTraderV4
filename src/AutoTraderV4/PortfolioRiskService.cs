@@ -1,3 +1,5 @@
+using AutoTraderV4.Services;
+
 namespace AutoTraderV4;
 
 public sealed class PortfolioRiskPolicy
@@ -123,5 +125,90 @@ public sealed class PortfolioRiskService
         assessment.DefensiveMode = assessment.DefensiveMode || assessment.Violations.Count > 0;
 
         return assessment;
+    }
+
+    public RiskCheckResult Evaluate(PortfolioDashboard dashboard, TradeDecision? decision = null)
+    {
+        ArgumentNullException.ThrowIfNull(dashboard);
+
+        var totalPortfolioValue = dashboard.Summary.TotalPortfolioValue;
+        var cashReservePercent = totalPortfolioValue > 0m ? (dashboard.Summary.AvailableCash / totalPortfolioValue) * 100m : 0m;
+        var exposurePercent = dashboard.Summary.TotalExposurePercent;
+        var warnings = new List<string>();
+        var defensiveMode = dashboard.Summary.DefensiveMode;
+
+        if (exposurePercent > _policy.MaxPortfolioExposurePct)
+        {
+            defensiveMode = true;
+            warnings.Add("Portfolio exposure exceeds the 95% cap.");
+        }
+
+        if (cashReservePercent < _policy.MinCashReservePct)
+        {
+            defensiveMode = true;
+            warnings.Add("Cash reserve has fallen below the 5% minimum.");
+        }
+
+        var dailyLossPercent = totalPortfolioValue > 0m ? (dashboard.Summary.DailyPnL / totalPortfolioValue) * 100m : 0m;
+        if (dailyLossPercent < -_policy.MaxDailyLossPct)
+        {
+            defensiveMode = true;
+            warnings.Add("Daily drawdown is beyond the 2% limit.");
+        }
+
+        var proposedPositionPercent = 0m;
+        var projectedExposurePercent = exposurePercent;
+        var projectedCashReservePercent = cashReservePercent;
+
+        if (decision is not null)
+        {
+            var tradeValue = Math.Abs(decision.Quantity * decision.EntryPrice);
+            var tradeDeltaValue = decision.Side == OrderSide.Sell ? -tradeValue : tradeValue;
+            var projectedExposureValue = totalPortfolioValue > 0m ? (exposurePercent / 100m * totalPortfolioValue) + tradeDeltaValue : 0m;
+            var projectedCashValue = dashboard.Summary.AvailableCash - (decision.Side == OrderSide.Buy ? tradeValue : -tradeValue);
+
+            proposedPositionPercent = totalPortfolioValue > 0m ? (tradeValue / totalPortfolioValue) * 100m : 0m;
+            projectedExposurePercent = totalPortfolioValue > 0m ? (projectedExposureValue / totalPortfolioValue) * 100m : 0m;
+            projectedCashReservePercent = totalPortfolioValue > 0m ? (projectedCashValue / totalPortfolioValue) * 100m : 0m;
+
+            if (proposedPositionPercent > _policy.MaxPositionPct)
+            {
+                warnings.Add("This trade would exceed the 5% max position size limit.");
+            }
+
+            if (projectedExposurePercent > _policy.MaxPortfolioExposurePct)
+            {
+                warnings.Add("This trade would exceed the 95% portfolio exposure cap.");
+            }
+
+            if (projectedCashReservePercent < _policy.MinCashReservePct)
+            {
+                warnings.Add("This trade would violate the 5% cash reserve minimum.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(decision.Sector) && dashboard.Positions.Count > 0)
+            {
+                var sectorExposureValue = dashboard.Positions
+                    .Where(p => string.Equals(p.Sector, decision.Sector, StringComparison.OrdinalIgnoreCase))
+                    .Sum(p => p.Quantity * p.CurrentPrice);
+
+                var projectedSectorExposure = totalPortfolioValue > 0m ? ((sectorExposureValue + (decision.Side == OrderSide.Buy ? tradeValue : -tradeValue)) / totalPortfolioValue) * 100m : 0m;
+                if (projectedSectorExposure > _policy.MaxSectorExposurePct)
+                {
+                    warnings.Add("This trade would exceed the sector exposure cap.");
+                }
+            }
+        }
+
+        var allowed = warnings.Count == 0;
+        return new RiskCheckResult
+        {
+            Allowed = allowed,
+            DefensiveMode = defensiveMode || !allowed,
+            ExposurePercent = exposurePercent,
+            CashReservePercent = cashReservePercent,
+            ProposedPositionPercent = proposedPositionPercent,
+            Warnings = warnings
+        };
     }
 }
