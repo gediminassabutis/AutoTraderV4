@@ -1,7 +1,10 @@
+using System.Net.Sockets;
 using System.Text.Json.Serialization;
 using AutoTraderV4.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Npgsql;
 
 namespace AutoTraderV4;
 
@@ -10,6 +13,12 @@ public partial class Program
     public static async Task Main(string[] args)
     {
         var builder = WebApplication.CreateBuilder(args);
+
+        if (builder.Environment.IsDevelopment())
+        {
+            builder.Configuration.AddUserSecrets<Program>(optional: true);
+        }
+
         ConfigureServices(builder);
 
         var app = builder.Build();
@@ -75,25 +84,7 @@ public partial class Program
 
         if (includeDatabase)
         {
-            var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
-            var configuredUseInMemory = builder.Configuration.GetValue<bool?>("Database:UseInMemory")
-                ?? builder.Configuration.GetValue<bool?>("UseInMemoryDatabase");
-            var useInMemoryDatabase = configuredUseInMemory ?? (useDemoData || string.IsNullOrWhiteSpace(connectionString));
-
-            if (useInMemoryDatabase)
-            {
-                var databaseName = builder.Configuration.GetValue<string>("Database:InMemoryDatabaseName") ?? "AutoTraderV4_Test";
-                builder.Services.AddDbContext<ApplicationDbContext>(options =>
-                    options.UseInMemoryDatabase(databaseName));
-            }
-            else
-            {
-                var resolvedConnectionString = connectionString
-                    ?? "Host=localhost;Database=autotrader_v4;Username=postgres;Password=postgres";
-
-                builder.Services.AddDbContext<ApplicationDbContext>(options =>
-                    options.UseNpgsql(resolvedConnectionString));
-            }
+            ConfigureDatabaseServices(builder, useDemoData);
         }
 
         builder.Services.AddEndpointsApiExplorer();
@@ -102,6 +93,123 @@ public partial class Program
         {
             options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
         });
+    }
+
+    private static void ConfigureDatabaseServices(WebApplicationBuilder builder, bool useDemoData)
+    {
+        var databaseConfiguration = ResolveDatabaseConfiguration(builder.Configuration, useDemoData);
+
+        builder.Services.AddDbContext<ApplicationDbContext>(options =>
+        {
+            if (databaseConfiguration.UseInMemoryDatabase)
+            {
+                options.UseInMemoryDatabase(databaseConfiguration.InMemoryDatabaseName);
+                return;
+            }
+
+            options.UseNpgsql(databaseConfiguration.ConnectionString);
+        });
+    }
+
+    private static DatabaseConfiguration ResolveDatabaseConfiguration(IConfiguration configuration, bool useDemoData)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        var configuredUseInMemory = configuration.GetValue<bool?>("Database:UseInMemory")
+            ?? configuration.GetValue<bool?>("UseInMemoryDatabase");
+        var inMemoryDatabaseName = configuration.GetValue<string>("Database:InMemoryDatabaseName") ?? "AutoTraderV4_Test";
+        var connectionString = configuration.GetConnectionString("DefaultConnection");
+
+        if (configuredUseInMemory is true)
+        {
+            return DatabaseConfiguration.InMemory(inMemoryDatabaseName);
+        }
+
+        if (configuredUseInMemory is false)
+        {
+            if (string.IsNullOrWhiteSpace(connectionString))
+            {
+                throw new InvalidOperationException(
+                    "Database:UseInMemory is false, but ConnectionStrings:DefaultConnection is not configured.");
+            }
+
+            var postgresAvailability = EvaluatePostgresAvailability(connectionString);
+            if (!postgresAvailability.IsReachable)
+            {
+                throw new InvalidOperationException(
+                    $"Database:UseInMemory is false, but the configured PostgreSQL connection is not reachable. {postgresAvailability.FailureReason}");
+            }
+
+            return DatabaseConfiguration.Postgres(postgresAvailability.ConnectionString);
+        }
+
+        if (useDemoData || string.IsNullOrWhiteSpace(connectionString))
+        {
+            return DatabaseConfiguration.InMemory(inMemoryDatabaseName);
+        }
+
+        var fallbackAvailability = EvaluatePostgresAvailability(connectionString);
+        return fallbackAvailability.IsReachable
+            ? DatabaseConfiguration.Postgres(fallbackAvailability.ConnectionString)
+            : DatabaseConfiguration.InMemory(inMemoryDatabaseName);
+    }
+
+    private static PostgresAvailability EvaluatePostgresAvailability(string connectionString)
+    {
+        try
+        {
+            var connectionStringBuilder = new NpgsqlConnectionStringBuilder(connectionString);
+            if (string.IsNullOrWhiteSpace(connectionStringBuilder.Host))
+            {
+                return PostgresAvailability.Unreachable(connectionString, "The PostgreSQL connection string is missing a host.");
+            }
+
+            connectionStringBuilder.Timeout = connectionStringBuilder.Timeout is > 0 and <= 2
+                ? connectionStringBuilder.Timeout
+                : 2;
+            connectionStringBuilder.CommandTimeout = connectionStringBuilder.CommandTimeout is > 0 and <= 2
+                ? connectionStringBuilder.CommandTimeout
+                : 2;
+            connectionStringBuilder.Pooling = false;
+
+            using var connection = new NpgsqlConnection(connectionStringBuilder.ConnectionString);
+            connection.Open();
+            return PostgresAvailability.Reachable(connectionStringBuilder.ConnectionString);
+        }
+        catch (ArgumentException ex)
+        {
+            return PostgresAvailability.Unreachable(connectionString, ex.Message);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return PostgresAvailability.Unreachable(connectionString, ex.Message);
+        }
+        catch (SocketException ex)
+        {
+            return PostgresAvailability.Unreachable(connectionString, ex.Message);
+        }
+        catch (TimeoutException ex)
+        {
+            return PostgresAvailability.Unreachable(connectionString, ex.Message);
+        }
+        catch (NpgsqlException ex)
+        {
+            return PostgresAvailability.Unreachable(connectionString, ex.Message);
+        }
+    }
+
+    private sealed record DatabaseConfiguration(bool UseInMemoryDatabase, string InMemoryDatabaseName, string? ConnectionString)
+    {
+        public static DatabaseConfiguration InMemory(string databaseName) => new(true, databaseName, null);
+
+        public static DatabaseConfiguration Postgres(string connectionString) => new(false, string.Empty, connectionString);
+    }
+
+    private sealed record PostgresAvailability(bool IsReachable, string ConnectionString, string? FailureReason)
+    {
+        public static PostgresAvailability Reachable(string connectionString) => new(true, connectionString, null);
+
+        public static PostgresAvailability Unreachable(string connectionString, string failureReason) => new(false, connectionString, failureReason);
     }
 
     public static void ConfigureApp(WebApplication app)

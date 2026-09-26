@@ -70,6 +70,29 @@ public class Trading212ApplicationTests
     }
 
     [Fact]
+    public void Program_ConfigureServices_UsesInMemoryDatabase_WhenPostgresIsUnreachableAndDatabaseFlagIsUnset()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Trading212:UseDemoData"] = "false",
+            ["Trading212:ApiKey"] = "demo-key",
+            ["Trading212:ApiSecret"] = "demo-secret",
+            ["ConnectionStrings:DefaultConnection"] = "Host=127.0.0.1;Port=1;Database=autotrader_v4;Username=postgres;Password=postgres;Timeout=1;Command Timeout=1;Pooling=false",
+            ["Database:UseInMemory"] = null,
+            ["Database:InMemoryDatabaseName"] = "Program_ConfigureServices_UnreachablePostgres_Test"
+        });
+
+        Program.ConfigureServices(builder);
+
+        using var provider = builder.Services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+        Assert.True(context.Database.IsInMemory());
+    }
+
+    [Fact]
     public void Program_ConfigureServices_UsesDemoTrading212Client_WhenDemoDataEnabled()
     {
         var builder = WebApplication.CreateBuilder();
@@ -86,6 +109,29 @@ public class Trading212ApplicationTests
         var client = provider.GetRequiredService<ITrading212Client>();
 
         Assert.IsType<DemoTrading212Client>(client);
+    }
+
+    [Fact]
+    public void Program_ConfigureServices_UsesInMemoryDatabase_WhenPostgresIsUnreachableAndUseInMemoryIsUnset()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["ConnectionStrings:DefaultConnection"] = "Host=127.0.0.1;Port=1;Database=autotrader_v4;Username=postgres;Password=postgres",
+            ["Trading212:UseDemoData"] = "false",
+            ["Trading212:ApiKey"] = "demo-key",
+            ["Trading212:ApiSecret"] = "demo-secret",
+            ["Database:UseInMemory"] = null,
+            ["Database:InMemoryDatabaseName"] = "Program_ConfigureServices_PostgresFallback_Test"
+        });
+
+        Program.ConfigureServices(builder);
+
+        using var provider = builder.Services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+        Assert.True(context.Database.IsInMemory());
     }
 
     [Fact]
