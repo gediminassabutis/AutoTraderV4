@@ -30,13 +30,25 @@ public partial class Program
     {
         ArgumentNullException.ThrowIfNull(builder);
 
+        var configuredAllowedOrigins = builder.Configuration
+            .GetSection("Cors:AllowedOrigins")
+            .Get<string[]>()
+            ?? [
+                "http://localhost:5173",
+                "https://localhost:5173",
+                "http://localhost:3000",
+                "https://localhost:3000",
+                "http://127.0.0.1:5173",
+                "https://127.0.0.1:5173"
+            ];
+
         builder.Services.AddCors(options =>
         {
             options.AddPolicy("Default", policy =>
             {
-                policy.AllowAnyOrigin();
-                policy.AllowAnyHeader();
-                policy.AllowAnyMethod();
+                policy.WithOrigins(configuredAllowedOrigins)
+                    .AllowAnyHeader()
+                    .AllowAnyMethod();
             });
         });
 
@@ -63,8 +75,7 @@ public partial class Program
         builder.Services.AddScoped<IPortfolioRepository, PortfolioRepository>();
         builder.Services.AddScoped<StrategyExecutionService>();
         builder.Services.AddSingleton<PortfolioRiskPolicy>();
-        builder.Services.AddScoped<PortfolioRiskService>();
-        builder.Services.AddScoped<global::AutoTraderV4.Services.PortfolioRiskService>();
+        builder.Services.AddScoped<global::AutoTraderV4.PortfolioRiskService>();
         builder.Services.AddSingleton<MovingAverageStrategyService>();
         builder.Services.AddSingleton<WeightedStrategyScoringService>();
         builder.Services.AddScoped<IPortfolioDashboardService, PortfolioDashboardService>();
@@ -218,6 +229,11 @@ public partial class Program
 
         app.UseCors("Default");
 
+        if (!app.Environment.IsDevelopment())
+        {
+            app.UseHttpsRedirection();
+        }
+
         if (app.Environment.IsDevelopment())
         {
             app.UseSwagger();
@@ -244,7 +260,7 @@ public partial class Program
             return Results.Ok(strategyEngineService.BuildWatchlist());
         });
 
-        app.MapGet("/api/risk/summary", async ([FromServices] IPortfolioDashboardService dashboardService, [FromServices] global::AutoTraderV4.Services.PortfolioRiskService riskService, CancellationToken cancellationToken) =>
+        app.MapGet("/api/risk/summary", async ([FromServices] IPortfolioDashboardService dashboardService, [FromServices] global::AutoTraderV4.PortfolioRiskService riskService, CancellationToken cancellationToken) =>
         {
             var dashboard = await dashboardService.GetDashboardAsync(cancellationToken);
             return Results.Ok(riskService.Evaluate(dashboard));
@@ -327,7 +343,7 @@ public partial class Program
             });
         });
 
-        app.MapPost("/api/risk/evaluate", async ([FromBody] TradeDecision decision, [FromServices] IPortfolioDashboardService dashboardService, [FromServices] global::AutoTraderV4.Services.PortfolioRiskService riskService, CancellationToken cancellationToken) =>
+        app.MapPost("/api/risk/evaluate", async ([FromBody] TradeDecision decision, [FromServices] IPortfolioDashboardService dashboardService, [FromServices] global::AutoTraderV4.PortfolioRiskService riskService, CancellationToken cancellationToken) =>
         {
             var dashboard = await dashboardService.GetDashboardAsync(cancellationToken);
             var result = riskService.Evaluate(dashboard, decision);
