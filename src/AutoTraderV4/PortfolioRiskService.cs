@@ -1,3 +1,5 @@
+using AutoTraderV4.Services;
+
 namespace AutoTraderV4;
 
 public sealed class PortfolioRiskPolicy
@@ -123,5 +125,66 @@ public sealed class PortfolioRiskService
         assessment.DefensiveMode = assessment.DefensiveMode || assessment.Violations.Count > 0;
 
         return assessment;
+    }
+
+    public RiskCheckResult Evaluate(PortfolioDashboard dashboard, TradeDecision? decision = null)
+    {
+        ArgumentNullException.ThrowIfNull(dashboard);
+
+        var totalPortfolioValue = dashboard.Summary.TotalPortfolioValue;
+        var cashReservePercent = totalPortfolioValue > 0m ? (dashboard.Summary.AvailableCash / totalPortfolioValue) * 100m : 0m;
+        var exposurePercent = dashboard.Summary.TotalExposurePercent;
+        var warnings = new List<string>();
+        var defensiveMode = false;
+
+        if (exposurePercent >= _policy.MaxPortfolioExposurePct)
+        {
+            defensiveMode = true;
+            warnings.Add("Portfolio exposure exceeds the 95% cap.");
+        }
+
+        if (cashReservePercent < _policy.MinCashReservePct)
+        {
+            defensiveMode = true;
+            warnings.Add("Cash reserve has fallen below the 5% minimum.");
+        }
+
+        if (dashboard.Summary.DailyPnL < -_policy.MaxDailyLossPct)
+        {
+            defensiveMode = true;
+            warnings.Add("Daily drawdown is beyond the 2% limit.");
+        }
+
+        if (decision is not null)
+        {
+            var proposedValue = decision.Quantity * decision.EntryPrice;
+            var proposedPositionPercent = totalPortfolioValue > 0m ? (proposedValue / totalPortfolioValue) * 100m : 0m;
+
+            if (proposedPositionPercent > _policy.MaxPositionPct)
+            {
+                warnings.Add("This trade would exceed the 5% max position size limit.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(decision.Ticker) && dashboard.Positions.Any(p => p.Symbol == decision.Ticker))
+            {
+                var currentExposure = dashboard.Positions.Where(p => p.Symbol == decision.Ticker).Sum(p => p.Quantity * p.CurrentPrice);
+                var combinedExposurePercent = totalPortfolioValue > 0m ? ((currentExposure + proposedValue) / totalPortfolioValue) * 100m : 0m;
+                if (combinedExposurePercent > _policy.MaxSectorExposurePct)
+                {
+                    warnings.Add("This trade would exceed the sector exposure cap.");
+                }
+            }
+        }
+
+        var allowed = warnings.Count == 0;
+        return new RiskCheckResult
+        {
+            Allowed = allowed,
+            DefensiveMode = defensiveMode || !allowed,
+            ExposurePercent = exposurePercent,
+            CashReservePercent = cashReservePercent,
+            ProposedPositionPercent = decision is null ? 0m : (decision.Quantity * decision.EntryPrice / totalPortfolioValue) * 100m,
+            Warnings = warnings
+        };
     }
 }

@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using AutoTraderV4.Services;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
 namespace AutoTraderV4;
@@ -129,7 +130,7 @@ public partial class Program
             return Results.Ok(strategyEngineService.BuildWatchlist());
         });
 
-        app.MapGet("/api/risk/summary", async (IPortfolioDashboardService dashboardService, PortfolioRiskService riskService, CancellationToken cancellationToken) =>
+        app.MapGet("/api/risk/summary", async ([FromServices] IPortfolioDashboardService dashboardService, [FromServices] global::AutoTraderV4.Services.PortfolioRiskService riskService, CancellationToken cancellationToken) =>
         {
             var dashboard = await dashboardService.GetDashboardAsync(cancellationToken);
             return Results.Ok(riskService.Evaluate(dashboard));
@@ -212,7 +213,7 @@ public partial class Program
             });
         });
 
-        app.MapPost("/api/risk/evaluate", async (TradeDecision decision, IPortfolioDashboardService dashboardService, PortfolioRiskService riskService, CancellationToken cancellationToken) =>
+        app.MapPost("/api/risk/evaluate", async ([FromBody] TradeDecision decision, [FromServices] IPortfolioDashboardService dashboardService, [FromServices] global::AutoTraderV4.Services.PortfolioRiskService riskService, CancellationToken cancellationToken) =>
         {
             var dashboard = await dashboardService.GetDashboardAsync(cancellationToken);
             var result = riskService.Evaluate(dashboard, decision);
@@ -306,7 +307,7 @@ public partial class Program
                 Side = side,
                 Quantity = request.Quantity,
                 OrderType = request.OrderType,
-                ConfidenceScore = (int)Math.Round(score.FinalScore),
+                ConfidenceScore = Math.Round(score.FinalScore, 2),
                 Rating = score.Rating,
                 EntryPrice = request.EntryPrice,
                 StopLoss = request.StopLoss,
@@ -314,7 +315,7 @@ public partial class Program
                 RiskReward = request.EntryPrice > 0m && request.StopLoss > 0m && request.EntryPrice != request.StopLoss
                     ? (request.TakeProfit - request.EntryPrice) / (request.EntryPrice - request.StopLoss)
                     : 0m,
-                TopFactors = score.TopFactors,
+                TopFactors = score.TopFactors.ToList(),
                 TriggeringStrategy = "Weighted strategy engine",
                 RiskAssessment = score.TradeEligible ? "Approved for execution" : "Below threshold; monitor for re-entry"
             };
@@ -330,7 +331,6 @@ public partial class Program
             return Results.Ok(assessment);
         });
 
-        app.Run();
         app.MapFallbackToFile("index.html");
     }
 }
