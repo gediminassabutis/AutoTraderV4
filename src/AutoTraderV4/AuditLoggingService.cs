@@ -27,6 +27,35 @@ public sealed class AuditLoggingService
             ? string.Join(", ", decision.StrategyBreakdown.Select(x => x.Strategy))
             : decision.TriggeringStrategy;
 
+        var fallbackSignalScores = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase)
+        {
+            [nameof(decision.FactorBreakdown.TechnicalScore)] = decision.FactorBreakdown.TechnicalScore,
+            [nameof(decision.FactorBreakdown.FundamentalScore)] = decision.FactorBreakdown.FundamentalScore,
+            [nameof(decision.FactorBreakdown.MomentumScore)] = decision.FactorBreakdown.MomentumScore,
+            [nameof(decision.FactorBreakdown.SentimentScore)] = decision.FactorBreakdown.SentimentScore,
+            [nameof(decision.FactorBreakdown.MacroScore)] = decision.FactorBreakdown.MacroScore
+        };
+
+        var recommendationPayload = new
+        {
+            symbol = decision.Ticker,
+            sector = request.Sector,
+            rating = decision.Rating,
+            recommendation = string.IsNullOrWhiteSpace(decision.Recommendation) ? decision.RecommendationSummary : decision.Recommendation,
+            confidence = decision.Confidence,
+            entryPrice = decision.EntryPrice,
+            stopLoss = decision.StopLoss,
+            takeProfit = decision.TakeProfit,
+            riskReward = decision.RiskReward,
+            topFactors = decision.TopFactors,
+            signalScores = decision.SignalScores is { Count: > 0 } ? decision.SignalScores : fallbackSignalScores,
+            forecast = decision.Forecast,
+            forecastSummary = string.IsNullOrWhiteSpace(decision.ForecastOutput) ? decision.BuildForecastOutput() : decision.ForecastOutput,
+            eligibleForExecution = decision.EligibleForExecution,
+            finalScore = decision.FinalScore,
+            triggeringStrategy = decision.TriggeringStrategy
+        };
+
         var entry = new TradeAuditEntry
         {
             Id = Guid.NewGuid(),
@@ -43,30 +72,16 @@ public sealed class AuditLoggingService
             OrderType = decision.OrderType.ToString(),
             SignalScoresJson = decision.SignalScores is { Count: > 0 }
                 ? JsonSerializer.Serialize(decision.SignalScores, JsonOptions)
-                : JsonSerializer.Serialize(new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase)
-                {
-                    [nameof(decision.FactorBreakdown.TechnicalScore)] = decision.FactorBreakdown.TechnicalScore,
-                    [nameof(decision.FactorBreakdown.FundamentalScore)] = decision.FactorBreakdown.FundamentalScore,
-                    [nameof(decision.FactorBreakdown.MomentumScore)] = decision.FactorBreakdown.MomentumScore,
-                    [nameof(decision.FactorBreakdown.SentimentScore)] = decision.FactorBreakdown.SentimentScore,
-                    [nameof(decision.FactorBreakdown.MacroScore)] = decision.FactorBreakdown.MacroScore
-                }, JsonOptions),
-            ForecastJson = string.IsNullOrWhiteSpace(decision.ForecastOutput) ? JsonSerializer.Serialize(decision.Forecast, JsonOptions) : decision.ForecastOutput,
+                : JsonSerializer.Serialize(fallbackSignalScores, JsonOptions),
+            ForecastJson = string.IsNullOrWhiteSpace(decision.ForecastOutput)
+                ? JsonSerializer.Serialize(decision.Forecast, JsonOptions)
+                : decision.ForecastOutput,
             RiskAssessmentJson = JsonSerializer.Serialize(new
             {
                 assessment = riskAssessment,
                 summary = string.IsNullOrWhiteSpace(decision.RiskAssessment) ? "Within trading constraints" : decision.RiskAssessment
             }, JsonOptions),
-            RecommendationJson = JsonSerializer.Serialize(new
-            {
-                symbol = request.Symbol,
-                sector = request.Sector,
-                rating = decision.Rating,
-                recommendation = string.IsNullOrWhiteSpace(decision.Recommendation) ? decision.RecommendationSummary : decision.Recommendation,
-                topFactors = decision.TopFactors,
-                confidence = decision.Confidence,
-                eligibleForExecution = decision.EligibleForExecution
-            }, JsonOptions),
+            RecommendationJson = JsonSerializer.Serialize(recommendationPayload, JsonOptions),
             CreatedUtc = decision.TimestampUtc == default ? decision.GeneratedAtUtc : decision.TimestampUtc
         };
 

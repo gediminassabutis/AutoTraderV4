@@ -1,5 +1,3 @@
-using AutoTraderV4.Services;
-
 namespace AutoTraderV4;
 
 public sealed class PortfolioRiskPolicy
@@ -23,6 +21,18 @@ public sealed class TradeRiskRequest
     public decimal PortfolioDrawdownPct { get; set; }
 }
 
+public sealed class TradeReductionPlan
+{
+    public bool RequiresReduction { get; set; }
+    public decimal OriginalTradeValue { get; set; }
+    public decimal ReducedTradeValue { get; set; }
+    public decimal ReducedQuantity { get; set; }
+    public decimal PositionPercentAfterReduction { get; set; }
+    public decimal ExposurePercentAfterReduction { get; set; }
+    public decimal CashReservePercentAfterReduction { get; set; }
+    public List<string> Reasons { get; } = [];
+}
+
 public sealed class PortfolioRiskAssessment
 {
     public bool IsAllowed { get; set; }
@@ -34,6 +44,7 @@ public sealed class PortfolioRiskAssessment
     public decimal ExposureAfterTradePct { get; set; }
     public List<string> Violations { get; } = new();
     public List<string> Warnings { get; } = new();
+    public TradeReductionPlan? ReductionPlan { get; set; }
 }
 
 public sealed class PortfolioRiskService
@@ -76,13 +87,21 @@ public sealed class PortfolioRiskService
             throw new ArgumentOutOfRangeException(nameof(portfolioValue), "Portfolio value must be greater than zero.");
         }
 
+        var projectedCashValue = availableCash - proposedPositionValue;
+        var projectedExposureValue = existingExposureValue + proposedPositionValue;
+        var proposedPositionPct = proposedPositionValue / portfolioValue * 100m;
+        var projectedExposurePct = projectedExposureValue / portfolioValue * 100m;
+        var projectedCashPct = projectedCashValue / portfolioValue * 100m;
+        var projectedSectorPct = (sectorExposureValue + proposedPositionValue) / portfolioValue * 100m;
+        var dailyLossPct = (dailyPortfolioLoss / portfolioValue) * 100m;
+
         var assessment = new PortfolioRiskAssessment
         {
             PortfolioValue = portfolioValue,
             AvailableCash = availableCash,
             ProposedPositionValue = proposedPositionValue,
-            ProposedPositionPct = proposedPositionValue / portfolioValue * 100m,
-            ExposureAfterTradePct = (existingExposureValue + proposedPositionValue) / portfolioValue * 100m
+            ProposedPositionPct = proposedPositionPct,
+            ExposureAfterTradePct = projectedExposurePct
         };
 
         var minimumCash = portfolioValue * _policy.MinCashReservePct / 100m;
@@ -98,21 +117,25 @@ public sealed class PortfolioRiskService
         }
 
         var maxExposure = portfolioValue * _policy.MaxPortfolioExposurePct / 100m;
-        if (existingExposureValue + proposedPositionValue > maxExposure)
+        if (projectedExposureValue > maxExposure)
         {
             assessment.Violations.Add($"Portfolio exposure would exceed the { _policy.MaxPortfolioExposurePct }% limit.");
         }
 
         var maxSectorExposure = portfolioValue * _policy.MaxSectorExposurePct / 100m;
-        if (sectorExposureValue + proposedPositionValue > maxSectorExposure)
+        if (projectedSectorPct > _policy.MaxSectorExposurePct)
         {
             assessment.Violations.Add($"Sector concentration would exceed the { _policy.MaxSectorExposurePct }% cap.");
         }
 
-        var dailyLossPct = (dailyPortfolioLoss / portfolioValue) * 100m;
         if (dailyLossPct < -_policy.MaxDailyLossPct)
         {
             assessment.Violations.Add($"Daily portfolio loss is outside the {_policy.MaxDailyLossPct}% limit.");
+        }
+
+        if (projectedCashPct < _policy.MinCashReservePct)
+        {
+            assessment.Violations.Add($"Projected cash reserve {projectedCashPct:F2}% is below the {_policy.MinCashReservePct:F2}% minimum.");
         }
 
         if (portfolioDrawdownPct > _policy.MaxPortfolioDrawdownPct)
@@ -121,94 +144,110 @@ public sealed class PortfolioRiskService
             assessment.Warnings.Add($"Portfolio drawdown exceeds the {_policy.MaxPortfolioDrawdownPct}% guardrail.");
         }
 
-        assessment.IsAllowed = assessment.Violations.Count == 0;
-        assessment.DefensiveMode = assessment.DefensiveMode || assessment.Violations.Count > 0;
+        assessment.ReductionPlan = BuildTradeReductionPlan(
+            portfolioValue,
+            availableCash,
+            proposedPositionValue,
+            existingExposureValue,
+            sectorExposureValue,
+            dailyPortfolioLoss,
+            portfolioDrawdownPct);
+
+        if (assessment.ReductionPlan.RequiresReduction)
+        {
+            assessment.Warnings.AddRange(assessment.ReductionPlan.Reasons);
+        }
+
+        assessment.IsAllowed = assessment.Violations.Count == 0 && !assessment.DefensiveMode && !assessment.ReductionPlan.RequiresReduction;
+        assessment.DefensiveMode = assessment.DefensiveMode || assessment.Violations.Count > 0 || assessment.ReductionPlan.RequiresReduction;
 
         return assessment;
     }
 
-    public RiskCheckResult Evaluate(PortfolioDashboard dashboard, TradeDecision? decision = null)
+    public TradeReductionPlan BuildTradeReductionPlan(
+        decimal portfolioValue,
+        decimal availableCash,
+        decimal proposedPositionValue,
+        decimal existingExposureValue = 0m,
+        decimal sectorExposureValue = 0m,
+        decimal dailyPortfolioLoss = 0m,
+        decimal portfolioDrawdownPct = 0m)
+    {
+        if (portfolioValue <= 0m)
+        {
+            throw new ArgumentOutOfRangeException(nameof(portfolioValue), "Portfolio value must be greater than zero.");
+        }
+
+        var maxPositionValue = portfolioValue * _policy.MaxPositionPct / 100m;
+        var maxExposureValue = portfolioValue * _policy.MaxPortfolioExposurePct / 100m;
+        var maxSectorValue = portfolioValue * _policy.MaxSectorExposurePct / 100m;
+        var minimumCashValue = portfolioValue * _policy.MinCashReservePct / 100m;
+        var requiredReduction = 0m;
+        var reasons = new List<string>();
+
+        if (proposedPositionValue > maxPositionValue)
+        {
+            var reduction = proposedPositionValue - maxPositionValue;
+            requiredReduction = Math.Max(requiredReduction, reduction);
+            reasons.Add($"Reduce position size by {reduction:F2} to stay within the {_policy.MaxPositionPct}% cap.");
+        }
+
+        if (existingExposureValue + proposedPositionValue > maxExposureValue)
+        {
+            var reduction = (existingExposureValue + proposedPositionValue) - maxExposureValue;
+            requiredReduction = Math.Max(requiredReduction, reduction);
+            reasons.Add($"Reduce exposure by {reduction:F2} to respect the {_policy.MaxPortfolioExposurePct}% portfolio limit.");
+        }
+
+        if ((sectorExposureValue + proposedPositionValue) > maxSectorValue)
+        {
+            var reduction = (sectorExposureValue + proposedPositionValue) - maxSectorValue;
+            requiredReduction = Math.Max(requiredReduction, reduction);
+            reasons.Add($"Reduce sector concentration by {reduction:F2} to remain below the {_policy.MaxSectorExposurePct}% sector cap.");
+        }
+
+        if ((availableCash - proposedPositionValue) < minimumCashValue)
+        {
+            var reduction = minimumCashValue - (availableCash - proposedPositionValue);
+            requiredReduction = Math.Max(requiredReduction, reduction);
+            reasons.Add($"Raise cash by {reduction:F2} to maintain the {_policy.MinCashReservePct}% reserve requirement.");
+        }
+
+        if (dailyPortfolioLoss / portfolioValue * 100m < -_policy.MaxDailyLossPct)
+        {
+            reasons.Add($"Daily loss is below the {_policy.MaxDailyLossPct}% threshold; enter defensive mode.");
+        }
+
+        if (portfolioDrawdownPct > _policy.MaxPortfolioDrawdownPct)
+        {
+            reasons.Add($"Portfolio drawdown is above the {_policy.MaxPortfolioDrawdownPct}% threshold; reduce exposure.");
+        }
+
+        var reducedTradeValue = Math.Max(0m, proposedPositionValue - requiredReduction);
+        var reducedCashValue = Math.Max(0m, availableCash - reducedTradeValue);
+        var plan = new TradeReductionPlan
+        {
+            RequiresReduction = requiredReduction > 0m,
+            OriginalTradeValue = proposedPositionValue,
+            ReducedTradeValue = reducedTradeValue,
+            ReducedQuantity = reducedTradeValue,
+            PositionPercentAfterReduction = portfolioValue > 0m ? (reducedTradeValue / portfolioValue) * 100m : 0m,
+            ExposurePercentAfterReduction = portfolioValue > 0m ? ((existingExposureValue + reducedTradeValue) / portfolioValue) * 100m : 0m,
+            CashReservePercentAfterReduction = portfolioValue > 0m ? (reducedCashValue / portfolioValue) * 100m : 0m
+        };
+
+        foreach (var reason in reasons)
+        {
+            plan.Reasons.Add(reason);
+        }
+
+        return plan;
+    }
+
+    public global::AutoTraderV4.Services.RiskCheckResult Evaluate(global::AutoTraderV4.Services.PortfolioDashboard dashboard, TradeDecision? decision = null)
     {
         ArgumentNullException.ThrowIfNull(dashboard);
-
-        var totalPortfolioValue = dashboard.Summary.TotalPortfolioValue;
-        var cashReservePercent = totalPortfolioValue > 0m ? (dashboard.Summary.AvailableCash / totalPortfolioValue) * 100m : 0m;
-        var exposurePercent = dashboard.Summary.TotalExposurePercent;
-        var warnings = new List<string>();
-        var defensiveMode = dashboard.Summary.DefensiveMode;
-
-        if (exposurePercent > _policy.MaxPortfolioExposurePct)
-        {
-            defensiveMode = true;
-            warnings.Add("Portfolio exposure exceeds the 95% cap.");
-        }
-
-        if (cashReservePercent < _policy.MinCashReservePct)
-        {
-            defensiveMode = true;
-            warnings.Add("Cash reserve has fallen below the 5% minimum.");
-        }
-
-        var dailyLossPercent = totalPortfolioValue > 0m ? (dashboard.Summary.DailyPnL / totalPortfolioValue) * 100m : 0m;
-        if (dailyLossPercent < -_policy.MaxDailyLossPct)
-        {
-            defensiveMode = true;
-            warnings.Add("Daily drawdown is beyond the 2% limit.");
-        }
-
-        var proposedPositionPercent = 0m;
-        var projectedExposurePercent = exposurePercent;
-        var projectedCashReservePercent = cashReservePercent;
-
-        if (decision is not null)
-        {
-            var tradeValue = Math.Abs(decision.Quantity * decision.EntryPrice);
-            var tradeDeltaValue = decision.Side == OrderSide.Sell ? -tradeValue : tradeValue;
-            var projectedExposureValue = totalPortfolioValue > 0m ? (exposurePercent / 100m * totalPortfolioValue) + tradeDeltaValue : 0m;
-            var projectedCashValue = dashboard.Summary.AvailableCash - (decision.Side == OrderSide.Buy ? tradeValue : -tradeValue);
-
-            proposedPositionPercent = totalPortfolioValue > 0m ? (tradeValue / totalPortfolioValue) * 100m : 0m;
-            projectedExposurePercent = totalPortfolioValue > 0m ? (projectedExposureValue / totalPortfolioValue) * 100m : 0m;
-            projectedCashReservePercent = totalPortfolioValue > 0m ? (projectedCashValue / totalPortfolioValue) * 100m : 0m;
-
-            if (proposedPositionPercent > _policy.MaxPositionPct)
-            {
-                warnings.Add("This trade would exceed the 5% max position size limit.");
-            }
-
-            if (projectedExposurePercent > _policy.MaxPortfolioExposurePct)
-            {
-                warnings.Add("This trade would exceed the 95% portfolio exposure cap.");
-            }
-
-            if (projectedCashReservePercent < _policy.MinCashReservePct)
-            {
-                warnings.Add("This trade would violate the 5% cash reserve minimum.");
-            }
-
-            if (!string.IsNullOrWhiteSpace(decision.Sector) && dashboard.Positions.Count > 0)
-            {
-                var sectorExposureValue = dashboard.Positions
-                    .Where(p => string.Equals(p.Sector, decision.Sector, StringComparison.OrdinalIgnoreCase))
-                    .Sum(p => p.Quantity * p.CurrentPrice);
-
-                var projectedSectorExposure = totalPortfolioValue > 0m ? ((sectorExposureValue + (decision.Side == OrderSide.Buy ? tradeValue : -tradeValue)) / totalPortfolioValue) * 100m : 0m;
-                if (projectedSectorExposure > _policy.MaxSectorExposurePct)
-                {
-                    warnings.Add("This trade would exceed the sector exposure cap.");
-                }
-            }
-        }
-
-        var allowed = warnings.Count == 0;
-        return new RiskCheckResult
-        {
-            Allowed = allowed,
-            DefensiveMode = defensiveMode || !allowed,
-            ExposurePercent = exposurePercent,
-            CashReservePercent = cashReservePercent,
-            ProposedPositionPercent = proposedPositionPercent,
-            Warnings = warnings
-        };
+        return new global::AutoTraderV4.Services.PortfolioRiskService().Evaluate(dashboard, decision);
     }
+
 }

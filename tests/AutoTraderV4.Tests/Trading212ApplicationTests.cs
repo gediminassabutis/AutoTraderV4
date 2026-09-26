@@ -70,6 +70,29 @@ public class Trading212ApplicationTests
     }
 
     [Fact]
+    public void Program_ConfigureServices_UsesInMemoryDatabase_WhenPostgresIsUnreachableAndDatabaseFlagIsUnset()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Trading212:UseDemoData"] = "false",
+            ["Trading212:ApiKey"] = "demo-key",
+            ["Trading212:ApiSecret"] = "demo-secret",
+            ["ConnectionStrings:DefaultConnection"] = "Host=127.0.0.1;Port=1;Database=autotrader_v4;Username=postgres;Password=postgres;Timeout=1;Command Timeout=1;Pooling=false",
+            ["Database:UseInMemory"] = null,
+            ["Database:InMemoryDatabaseName"] = "Program_ConfigureServices_UnreachablePostgres_Test"
+        });
+
+        Program.ConfigureServices(builder);
+
+        using var provider = builder.Services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+        Assert.True(context.Database.IsInMemory());
+    }
+
+    [Fact]
     public void Program_ConfigureServices_UsesDemoTrading212Client_WhenDemoDataEnabled()
     {
         var builder = WebApplication.CreateBuilder();
@@ -86,6 +109,29 @@ public class Trading212ApplicationTests
         var client = provider.GetRequiredService<ITrading212Client>();
 
         Assert.IsType<DemoTrading212Client>(client);
+    }
+
+    [Fact]
+    public void Program_ConfigureServices_UsesInMemoryDatabase_WhenPostgresIsUnreachableAndUseInMemoryIsUnset()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["ConnectionStrings:DefaultConnection"] = "Host=127.0.0.1;Port=1;Database=autotrader_v4;Username=postgres;Password=postgres",
+            ["Trading212:UseDemoData"] = "false",
+            ["Trading212:ApiKey"] = "demo-key",
+            ["Trading212:ApiSecret"] = "demo-secret",
+            ["Database:UseInMemory"] = null,
+            ["Database:InMemoryDatabaseName"] = "Program_ConfigureServices_PostgresFallback_Test"
+        });
+
+        Program.ConfigureServices(builder);
+
+        using var provider = builder.Services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+        Assert.True(context.Database.IsInMemory());
     }
 
     [Fact]
@@ -252,8 +298,40 @@ public class Trading212ApplicationTests
         Assert.True(score.TradeEligible);
         Assert.True(score.FinalScore >= 75m);
         Assert.Contains("Strong trend confirmation", score.TopFactors);
+        Assert.Equal(WeightedStrategyScoringService.MinimumExecutionScore, 75m);
+        Assert.NotEmpty(score.StrategySignals);
+        Assert.All(score.StrategySignals, signal => Assert.True(signal.Confidence >= 0));
+        Assert.Contains("minimum execution threshold", score.Rationale, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void WeightedStrategyScoringService_GetRating_MapsBandsToExpectedLabels()
+    {
+        Assert.Equal("Strong Sell", WeightedStrategyScoringService.GetRating(39m));
+        Assert.Equal("Sell", WeightedStrategyScoringService.GetRating(54m));
+        Assert.Equal("Hold", WeightedStrategyScoringService.GetRating(64m));
+        Assert.Equal("Buy", WeightedStrategyScoringService.GetRating(79m));
+        Assert.Equal("Strong Buy", WeightedStrategyScoringService.GetRating(80m));
+    }
+
+    [Fact]
+    public void WeightedStrategyScoringService_RejectsExecutionBelowMinimumThreshold()
+    {
+        var service = new WeightedStrategyScoringService();
+
+        var score = service.Evaluate("AAPL_US_EQ", new WeightedStrategyMetrics
+        {
+            TrendScore = 48m,
+            MomentumScore = 42m,
+            MeanReversionScore = 60m,
+            EarningsSurpriseScore = 40m,
+            SentimentScore = 32m
+        });
+
+        Assert.False(score.TradeEligible);
+        Assert.True(score.FinalScore < WeightedStrategyScoringService.MinimumExecutionScore);
+        Assert.Equal("Sell", score.Rating);
+    }
     [Fact]
     public void PortfolioRiskService_EvaluateTrade_RejectsTrade_WhenExposureExceedsPolicy()
     {
@@ -269,7 +347,27 @@ public class Trading212ApplicationTests
             portfolioDrawdownPct: 5.5m);
 
         Assert.False(assessment.IsAllowed);
+        Assert.True(assessment.DefensiveMode);
         Assert.Contains(assessment.Violations, violation => violation.Contains("exceed", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void PortfolioRiskService_EvaluateTrade_ProducesReductionPlan_WhenPositionBreachesPolicy()
+    {
+        var service = new PortfolioRiskService();
+
+        var assessment = service.EvaluateTrade(
+            portfolioValue: 10000m,
+            availableCash: 200m,
+            proposedPositionValue: 1500m,
+            existingExposureValue: 7000m,
+            sectorExposureValue: 1800m,
+            dailyPortfolioLoss: -100m,
+            portfolioDrawdownPct: 1m);
+
+        Assert.True(assessment.ReductionPlan?.RequiresReduction == true);
+        Assert.True(assessment.ReductionPlan!.ReducedTradeValue < assessment.ProposedPositionValue);
+        Assert.Contains(assessment.Warnings, warning => warning.Contains("Reduce", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -330,7 +428,51 @@ public class Trading212ApplicationTests
         });
 
         Assert.False(result.Allowed);
+        Assert.True(result.DefensiveMode);
         Assert.Contains(result.Warnings, warning => warning.Contains("5% max position size", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void PortfolioRiskService_Evaluate_AdjustsDefensiveMode_WhenThresholdsAreBreached()
+    {
+        var dashboard = new PortfolioDashboard
+        {
+            Summary = new PortfolioSummary
+            {
+                TotalPortfolioValue = 10000m,
+                AvailableCash = 200m,
+                TotalExposurePercent = 96m,
+                DailyPnL = -300m,
+                DefensiveMode = false
+            },
+            Positions =
+            [
+                new PortfolioPositionView
+                {
+                    Symbol = "MSFT",
+                    Sector = "Technology",
+                    Quantity = 20m,
+                    CurrentPrice = 200m
+                }
+            ]
+        };
+
+        var result = new PortfolioRiskService().Evaluate(dashboard, new TradeDecision
+        {
+            Ticker = "NVDA",
+            Sector = "Technology",
+            Side = OrderSide.Buy,
+            Quantity = 30m,
+            EntryPrice = 100m,
+            OrderType = Trading212OrderType.Market,
+            Confidence = 90,
+            StopLoss = 90m,
+            TakeProfit = 130m
+        });
+
+        Assert.True(result.DefensiveMode);
+        Assert.NotNull(result.ReductionPlan);
+        Assert.True(result.ReductionPlan.RequiresReduction || result.Warnings.Count > 0);
     }
 
     [Fact]
@@ -344,6 +486,27 @@ public class Trading212ApplicationTests
         Assert.True(recommendation.Confidence >= 75);
         Assert.True(recommendation.RiskReward >= 2.5m);
         Assert.Contains(recommendation.TopFactors, factor => factor.Contains("Strong", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void StrategyEngineService_BuildRecommendation_IncludesExplainableForecastMetadata()
+    {
+        var service = new StrategyEngineService();
+
+        var recommendation = service.BuildRecommendation("NVDA", 132.40m);
+
+        Assert.NotNull(recommendation.Forecast);
+        Assert.False(string.IsNullOrWhiteSpace(recommendation.ForecastSummary));
+        Assert.NotEmpty(recommendation.ModelOutputs);
+        Assert.Equal(recommendation.ForecastSummary, recommendation.Forecast.Summary);
+        Assert.Equal(recommendation.ModelOutputs.Count, recommendation.Forecast.ModelOutputs.Count);
+        Assert.All(recommendation.ModelOutputs, model =>
+        {
+            Assert.False(string.IsNullOrWhiteSpace(model.ModelName));
+            Assert.False(string.IsNullOrWhiteSpace(model.Rationale));
+            Assert.True(model.Weight > 0m);
+            Assert.InRange(model.Confidence, 0m, 100m);
+        });
     }
 
     [Fact]

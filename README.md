@@ -31,14 +31,14 @@ This starts:
 
 ## Configure credentials
 
-Update the connection string and Trading 212 keys in `src/AutoTraderV4/appsettings.json`.
+Keep the committed `src/AutoTraderV4/appsettings.json` safe by leaving the PostgreSQL connection string blank and supplying secrets through user secrets or environment variables.
 
 Example:
 
 ```json
 {
   "ConnectionStrings": {
-    "DefaultConnection": "Host=localhost;Database=autotrader_v4;Username=postgres;Password=postgres"
+    "DefaultConnection": ""
   },
   "Database": {
     "UseInMemory": true,
@@ -52,6 +52,8 @@ Example:
   }
 }
 ```
+
+Set `ConnectionStrings__DefaultConnection` only when you want to use PostgreSQL. When the in-memory flag is unset, startup probes the configured PostgreSQL endpoint with a short timeout and falls back to the in-memory store if the database is unreachable.
 
 The app falls back to demo data automatically when `Trading212:UseDemoData` is `true` or when the API key/secret are left blank. This keeps the dashboard working on a clean machine without a live Trading 212 subscription.
 
@@ -80,7 +82,7 @@ npm install
 npm run build
 ```
 
-The dashboard lives in [ui/](/D:/source/AutoTraderV4.worktrees/multi-session-ui-backend-implementation/ui) and builds independently with Vite.
+The dashboard lives in [ui/](./ui) and builds independently with Vite.
 
 For iterative UI work you can also run the Vite dev server:
 
@@ -124,11 +126,11 @@ The automated suite now includes:
 
 ## Specialized agents
 
-The repository now includes a set of focused Copilot agents in [.github/agents](.github/agents) to drive the phased implementation described in [plan.md](plan.md): market data, strategy engine, risk governance, dashboard analytics, and QA validation.
+The repository now includes a set of focused Copilot agents in [.github/agents](./.github/agents) to drive the phased implementation described in [plan.md](./plan.md): market data, strategy engine, risk governance, dashboard analytics, and QA validation.
 
 ## Notes
 
 - The API uses the Trading 212 demo environment by default.
 - Sell order quantities are represented as negative values, as required by the Trading 212 API contract.
 - Keep secrets out of source control; prefer environment variables or user secrets in production.
-- See [plan.md](plan.md) for the implementation roadmap derived from [AGENTS.md](AGENTS.md).
+- See [plan.md](./plan.md) for the implementation roadmap derived from [AGENTS.md](./AGENTS.md).
