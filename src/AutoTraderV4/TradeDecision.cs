@@ -13,10 +13,16 @@ public sealed class TradeDecision
     public OrderSide Side { get; set; }
     public decimal Quantity { get; set; }
     public Trading212OrderType OrderType { get; set; }
+    public int ConfidenceScore { get; set; } = 75;
+    public string Rating { get; set; } = "Hold";
     public decimal EntryPrice { get; set; }
     public decimal StopLoss { get; set; }
     public decimal TakeProfit { get; set; }
     public decimal RiskReward { get; set; }
+    public string[] TopFactors { get; set; } = Array.Empty<string>();
+    public string TriggeringStrategy { get; set; } = string.Empty;
+    public string RiskAssessment { get; set; } = string.Empty;
+    public string ForecastOutput { get; set; } = string.Empty;
     public decimal FinalScore { get; set; }
     public decimal CombinedStrategyScore { get; set; }
     public decimal ConfidenceScore { get; set; }

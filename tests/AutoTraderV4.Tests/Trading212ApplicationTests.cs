@@ -227,6 +227,44 @@ public class Trading212ApplicationTests
     }
 
     [Fact]
+    public void WeightedStrategyScoringService_Evaluate_ProducesStrongBuy_WhenMetricsAreStrong()
+    {
+        var service = new WeightedStrategyScoringService();
+
+        var score = service.Evaluate("NVDA_US_EQ", new WeightedStrategyMetrics
+        {
+            TrendScore = 92m,
+            MomentumScore = 88m,
+            MeanReversionScore = 65m,
+            EarningsSurpriseScore = 80m,
+            SentimentScore = 78m
+        });
+
+        Assert.Equal("Strong Buy", score.Rating);
+        Assert.True(score.TradeEligible);
+        Assert.True(score.FinalScore >= 75m);
+        Assert.Contains("Strong trend confirmation", score.TopFactors);
+    }
+
+    [Fact]
+    public void PortfolioRiskService_EvaluateTrade_RejectsTrade_WhenExposureExceedsPolicy()
+    {
+        var service = new PortfolioRiskService();
+
+        var assessment = service.EvaluateTrade(
+            portfolioValue: 10000m,
+            availableCash: 300m,
+            proposedPositionValue: 900m,
+            existingExposureValue: 9000m,
+            sectorExposureValue: 600m,
+            dailyPortfolioLoss: -350m,
+            portfolioDrawdownPct: 5.5m);
+
+        Assert.False(assessment.IsAllowed);
+        Assert.Contains(assessment.Violations, violation => violation.Contains("exceed", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void ServiceCollection_RegistersTrading212Client()
     {
         var services = new ServiceCollection();

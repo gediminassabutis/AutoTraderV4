@@ -52,7 +52,10 @@ public partial class Program
 
         builder.Services.AddScoped<IPortfolioRepository, PortfolioRepository>();
         builder.Services.AddScoped<StrategyExecutionService>();
+        builder.Services.AddSingleton<PortfolioRiskPolicy>();
+        builder.Services.AddScoped<PortfolioRiskService>();
         builder.Services.AddSingleton<MovingAverageStrategyService>();
+        builder.Services.AddSingleton<WeightedStrategyScoringService>();
         builder.Services.AddScoped<IPortfolioDashboardService, PortfolioDashboardService>();
         builder.Services.AddSingleton<StrategyEngineService>();
         builder.Services.AddSingleton<PortfolioRiskService>();
@@ -284,6 +287,50 @@ public partial class Program
             return Results.Ok(new { signal, decision, request = requestBody });
         });
 
+        app.MapPost("/api/strategies/weighted-score", (WeightedStrategyRequest request, WeightedStrategyScoringService scoringService) =>
+        {
+            var metrics = new WeightedStrategyMetrics
+            {
+                TrendScore = request.TrendScore,
+                MomentumScore = request.MomentumScore,
+                MeanReversionScore = request.MeanReversionScore,
+                EarningsSurpriseScore = request.EarningsSurpriseScore,
+                SentimentScore = request.SentimentScore
+            };
+
+            var score = scoringService.Evaluate(request.Ticker, metrics);
+            var side = score.TradeEligible ? OrderSide.Buy : OrderSide.Sell;
+            var decision = new TradeDecision
+            {
+                Ticker = request.Ticker,
+                Side = side,
+                Quantity = request.Quantity,
+                OrderType = request.OrderType,
+                ConfidenceScore = (int)Math.Round(score.FinalScore),
+                Rating = score.Rating,
+                EntryPrice = request.EntryPrice,
+                StopLoss = request.StopLoss,
+                TakeProfit = request.TakeProfit,
+                RiskReward = request.EntryPrice > 0m && request.StopLoss > 0m && request.EntryPrice != request.StopLoss
+                    ? (request.TakeProfit - request.EntryPrice) / (request.EntryPrice - request.StopLoss)
+                    : 0m,
+                TopFactors = score.TopFactors,
+                TriggeringStrategy = "Weighted strategy engine",
+                RiskAssessment = score.TradeEligible ? "Approved for execution" : "Below threshold; monitor for re-entry"
+            };
+
+            return Results.Ok(new { score, decision });
+        });
+
+        app.MapGet("/api/risk/policy", (PortfolioRiskPolicy policy) => Results.Ok(policy));
+
+        app.MapPost("/api/risk/validate", (TradeRiskRequest request, PortfolioRiskService riskService) =>
+        {
+            var assessment = riskService.EvaluateTrade(request);
+            return Results.Ok(assessment);
+        });
+
+        app.Run();
         app.MapFallbackToFile("index.html");
     }
 }

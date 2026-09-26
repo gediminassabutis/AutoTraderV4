@@ -7,10 +7,9 @@ A .NET 10 C# trading automation starter for the Trading 212 Public API, with dem
 - Trading 212 API client with Basic Authentication
 - ASP.NET Core Web API endpoints
 - PostgreSQL persistence via Entity Framework Core
-- Weighted multi-strategy recommendation engine with explainable scoring
-- Risk governance with capital-preservation limits and defensive-mode actions
-- Persistent audit logging for strategy, risk, and portfolio workflows
-- Unit and integration tests covering auth, orders, portfolio, risk, strategy, and dashboard behavior
+- Weighted multi-strategy scoring engine with risk gates
+- Portfolio risk policy and defensive-mode validation
+- Unit tests covering auth, order behavior, and strategy/risk checks
 - Docker Compose setup for local PostgreSQL and pgAdmin
 
 ## Prerequisites
@@ -119,9 +118,9 @@ The automated suite now includes:
 - `GET /api/account/summary`
 - `GET /api/positions`
 - `POST /api/orders`
-- `POST /api/strategies/recommend`
-- `POST /api/strategies/recommendations`
-- `POST /api/risk/governance/evaluate`
+- `POST /api/strategies/weighted-score`
+- `POST /api/risk/validate`
+- `GET /api/risk/policy`
 
 ## Specialized agents
 
