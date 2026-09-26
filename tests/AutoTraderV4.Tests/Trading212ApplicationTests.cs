@@ -1,4 +1,6 @@
 using AutoTraderV4;
+using AutoTraderV4.Services;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -24,6 +26,66 @@ public class Trading212ApplicationTests
         Assert.Equal("AAPL_US_EQ", order.Ticker);
         Assert.Equal(-10.5m, order.Quantity);
         Assert.Equal(Trading212OrderType.Market, order.Type);
+    }
+
+    [Fact]
+    public void Program_ConfigureServices_UsesInMemoryDatabase_WhenConfigured()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Database:UseInMemory"] = "true",
+            ["Database:InMemoryDatabaseName"] = "Program_ConfigureServices_Test"
+        });
+
+        Program.ConfigureServices(builder);
+
+        using var provider = builder.Services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+        Assert.True(context.Database.IsInMemory());
+    }
+
+    [Fact]
+    public void Program_ConfigureServices_UsesInMemoryDatabase_WhenDemoDataIsEnabledAndDatabaseFlagIsUnset()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Trading212:UseDemoData"] = "true",
+            ["Trading212:ApiKey"] = string.Empty,
+            ["Trading212:ApiSecret"] = string.Empty,
+            ["Database:UseInMemory"] = null,
+            ["Database:InMemoryDatabaseName"] = "Program_ConfigureServices_DemoDefault_Test"
+        });
+
+        Program.ConfigureServices(builder);
+
+        using var provider = builder.Services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+        Assert.True(context.Database.IsInMemory());
+    }
+
+    [Fact]
+    public void Program_ConfigureServices_UsesDemoTrading212Client_WhenDemoDataEnabled()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Trading212:UseDemoData"] = "true",
+            ["Trading212:ApiKey"] = string.Empty,
+            ["Trading212:ApiSecret"] = string.Empty
+        });
+
+        Program.ConfigureServices(builder);
+
+        using var provider = builder.Services.BuildServiceProvider();
+        var client = provider.GetRequiredService<ITrading212Client>();
+
+        Assert.IsType<DemoTrading212Client>(client);
     }
 
     [Fact]
@@ -223,5 +285,81 @@ public class Trading212ApplicationTests
         var provider = services.BuildServiceProvider();
 
         Assert.NotNull(provider.GetService<ITrading212Client>());
+    }
+
+    [Fact]
+    public void PortfolioRiskService_RejectsRiskyTrade_WhenExposurePassesLimit()
+    {
+        var dashboard = new PortfolioDashboard
+        {
+            Summary = new PortfolioSummary
+            {
+                TotalPortfolioValue = 100000m,
+                AvailableCash = 10000m,
+                TotalExposurePercent = 90m,
+                DailyPnL = 1200m
+            },
+            Positions =
+            [
+                new PortfolioPositionView
+                {
+                    Symbol = "AAPL",
+                    Quantity = 25m,
+                    CurrentPrice = 200m
+                }
+            ]
+        };
+        var riskService = new PortfolioRiskService();
+
+        var result = riskService.Evaluate(dashboard, new TradeDecision
+        {
+            Ticker = "AAPL",
+            Side = OrderSide.Buy,
+            Quantity = 5000m,
+            EntryPrice = 800m,
+            OrderType = Trading212OrderType.Market,
+            Confidence = 82
+        });
+
+        Assert.False(result.Allowed);
+        Assert.Contains(result.Warnings, warning => warning.Contains("5% max position size", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void StrategyEngineService_BuildRecommendation_ReturnsHighConfidenceResult()
+    {
+        var service = new StrategyEngineService();
+
+        var recommendation = service.BuildRecommendation("NVDA", 132.40m);
+
+        Assert.Equal("NVDA", recommendation.Symbol);
+        Assert.True(recommendation.Confidence >= 75);
+        Assert.True(recommendation.RiskReward >= 2.5m);
+        Assert.Contains(recommendation.TopFactors, factor => factor.Contains("Strong", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void AuditLogService_Record_SavesDecisionMetadata()
+    {
+        var service = new AuditLogService();
+        var decision = new TradeDecision
+        {
+            Ticker = "MSFT",
+            Quantity = 10m,
+            EntryPrice = 420m,
+            StopLoss = 396m,
+            TakeProfit = 460m,
+            Confidence = 88,
+            Rating = "Buy",
+            TriggeringStrategy = "weighted-strategy",
+            CreatedUtc = DateTimeOffset.UtcNow
+        };
+
+        service.Record(decision, decision.TriggeringStrategy, new Dictionary<string, decimal> { ["Trend"] = 86m }, "Buy", "Within limits");
+        var entries = service.GetRecent();
+
+        Assert.Single(entries);
+        Assert.Equal("MSFT", entries[0].Symbol);
+        Assert.Equal("weighted-strategy", entries[0].TriggeringStrategy);
     }
 }

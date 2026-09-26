@@ -21,6 +21,7 @@ coverage*.xml
 # package
 packages/
 *.nupkg
+node_modules/
 
 # OS files
 Thumbs.db

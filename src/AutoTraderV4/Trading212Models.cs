@@ -7,6 +7,7 @@ public sealed class Trading212Options
     public string BaseUrl { get; set; } = "https://demo.trading212.com";
     public string ApiKey { get; set; } = string.Empty;
     public string ApiSecret { get; set; } = string.Empty;
+    public bool UseDemoData { get; set; } = true;
 }
 
 public static class Trading212Credentials
@@ -27,7 +28,8 @@ public enum Trading212OrderType
     Market,
     Limit,
     Stop,
-    StopLimit
+    StopLimit,
+    TrailingStop
 }
 
 public sealed record Trading212OrderRequest

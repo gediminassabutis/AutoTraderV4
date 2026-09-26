@@ -9,6 +9,32 @@ public interface ITrading212Client
     Task<Trading212OrderResult> PlaceOrderAsync(Trading212OrderRequest order, CancellationToken cancellationToken = default);
 }
 
+public sealed class DemoTrading212Client : ITrading212Client
+{
+    public Task<Trading212AccountSummary> GetAccountSummaryAsync(CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(new Trading212AccountSummary
+        {
+            Id = 42,
+            Currency = "USD",
+            Cash = 12500.50m,
+            Equity = 48750.25m
+        });
+    }
+
+    public Task<Trading212OrderResult> PlaceOrderAsync(Trading212OrderRequest order, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(order);
+
+        return Task.FromResult(new Trading212OrderResult
+        {
+            Id = 99,
+            Ticker = order.Ticker,
+            Status = "demo-accepted"
+        });
+    }
+}
+
 public sealed class Trading212Client : ITrading212Client
 {
     private readonly HttpClient _httpClient;
