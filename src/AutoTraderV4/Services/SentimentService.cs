@@ -17,6 +17,16 @@ public sealed record SentimentDataContract
 
     public string NormalizedSymbol => string.IsNullOrWhiteSpace(Symbol) ? Ticker : Symbol;
 
+    public bool MatchesRequestedSymbol(string requestedSymbol)
+    {
+        if (string.IsNullOrWhiteSpace(requestedSymbol))
+        {
+            return false;
+        }
+
+        return string.Equals(NormalizedSymbol.Trim(), requestedSymbol.Trim(), StringComparison.OrdinalIgnoreCase);
+    }
+
     public void Validate()
     {
         if (string.IsNullOrWhiteSpace(Symbol) && string.IsNullOrWhiteSpace(Ticker))
@@ -188,6 +198,11 @@ public sealed class SentimentService
                 }
 
                 candidate.Validate();
+
+                if (!candidate.MatchesRequestedSymbol(normalizedSymbol))
+                {
+                    throw new InvalidOperationException($"Provider returned data for symbol '{candidate.NormalizedSymbol}' instead of '{normalizedSymbol}'.");
+                }
 
                 var reference = _timeProvider.GetUtcNow();
                 var freshness = DataFreshnessRules.Evaluate(candidate.TimestampUtc, candidate.FreshnessWindow, reference);

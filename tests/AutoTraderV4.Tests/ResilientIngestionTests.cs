@@ -116,6 +116,49 @@ public class ResilientIngestionTests
     }
 
     [Fact]
+    public async Task MarketDataService_IngestAsync_RejectsWrongSymbolProviderResponse_BeforePersisting()
+    {
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        await using var context = new ApplicationDbContext(options);
+
+        var service = new MarketDataService(
+            context,
+            new IMarketDataProvider[]
+            {
+                new StaticMarketDataProvider(new MarketDataContract
+                {
+                    Symbol = "MSFT",
+                    Price = 500m,
+                    TimestampUtc = DateTimeOffset.UtcNow,
+                    Source = "primary",
+                    ProviderName = "wrong-symbol-provider",
+                    FreshnessWindow = TimeSpan.FromMinutes(5)
+                }),
+                new StaticMarketDataProvider(new MarketDataContract
+                {
+                    Symbol = "AAPL",
+                    Price = 182m,
+                    TimestampUtc = DateTimeOffset.UtcNow,
+                    Source = "fallback",
+                    ProviderName = "fallback-market-data",
+                    FreshnessWindow = TimeSpan.FromMinutes(5)
+                })
+            },
+            TimeProvider.System);
+
+        var result = await service.IngestAsync("AAPL");
+
+        Assert.True(result.Success);
+        Assert.Equal("fallback-market-data", result.ActiveProvider);
+        var persisted = await context.MarketSnapshots.SingleAsync();
+        Assert.Equal("AAPL", persisted.Ticker);
+        Assert.Equal("fallback-market-data", persisted.ProviderName);
+    }
+
+    [Fact]
     public async Task MarketDataService_IngestAsync_PersistsStaleState_WhenAllProvidersAreStale()
     {
         var options = new DbContextOptionsBuilder<ApplicationDbContext>()
@@ -206,6 +249,53 @@ public class ResilientIngestionTests
         Assert.Equal("fallback", record.Source);
         Assert.Equal("fallback-sentiment", record.ProviderName);
         Assert.Equal("Fresh", record.FreshnessStatus);
+    }
+
+    [Fact]
+    public async Task SentimentService_IngestAsync_RejectsWrongSymbolProviderResponse_BeforePersisting()
+    {
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        await using var context = new ApplicationDbContext(options);
+
+        var service = new SentimentService(
+            context,
+            new ISentimentProvider[]
+            {
+                new StaticSentimentProvider(new SentimentDataContract
+                {
+                    Symbol = "MSFT",
+                    Score = 80m,
+                    Magnitude = 70m,
+                    Confidence = 90m,
+                    TimestampUtc = DateTimeOffset.UtcNow,
+                    Source = "primary",
+                    ProviderName = "wrong-symbol-provider",
+                    FreshnessWindow = TimeSpan.FromMinutes(15)
+                }),
+                new StaticSentimentProvider(new SentimentDataContract
+                {
+                    Symbol = "NVDA",
+                    Score = 72m,
+                    Magnitude = 68m,
+                    Confidence = 85m,
+                    TimestampUtc = DateTimeOffset.UtcNow,
+                    Source = "fallback",
+                    ProviderName = "fallback-sentiment",
+                    FreshnessWindow = TimeSpan.FromMinutes(15)
+                })
+            },
+            TimeProvider.System);
+
+        var result = await service.IngestAsync("NVDA");
+
+        Assert.True(result.Success);
+        Assert.Equal("fallback-sentiment", result.ActiveProvider);
+        var record = await context.SentimentRecords.SingleAsync();
+        Assert.Equal("NVDA", record.Ticker);
+        Assert.Equal("fallback-sentiment", record.ProviderName);
     }
 
     private sealed class StaticMarketDataProvider : IMarketDataProvider

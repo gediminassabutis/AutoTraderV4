@@ -121,6 +121,28 @@ public partial class Program
 
         app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
+        app.MapGet("/api/market-data/refresh", async (string symbol, MarketDataService marketDataService, CancellationToken cancellationToken) =>
+        {
+            if (string.IsNullOrWhiteSpace(symbol))
+            {
+                return Results.BadRequest(new { error = "Ticker symbol is required." });
+            }
+
+            var result = await marketDataService.IngestAsync(symbol, cancellationToken);
+            return Results.Ok(result);
+        });
+
+        app.MapGet("/api/sentiment/refresh", async (string symbol, SentimentService sentimentService, CancellationToken cancellationToken) =>
+        {
+            if (string.IsNullOrWhiteSpace(symbol))
+            {
+                return Results.BadRequest(new { error = "Ticker symbol is required." });
+            }
+
+            var result = await sentimentService.IngestAsync(symbol, cancellationToken);
+            return Results.Ok(result);
+        });
+
         app.MapGet("/api/dashboard", async (IPortfolioDashboardService dashboardService, CancellationToken cancellationToken) =>
         {
             return Results.Ok(await dashboardService.GetDashboardAsync(cancellationToken));
