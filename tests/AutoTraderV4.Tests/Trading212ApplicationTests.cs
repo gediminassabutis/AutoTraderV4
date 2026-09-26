@@ -261,7 +261,27 @@ public class Trading212ApplicationTests
             portfolioDrawdownPct: 5.5m);
 
         Assert.False(assessment.IsAllowed);
+        Assert.True(assessment.DefensiveMode);
         Assert.Contains(assessment.Violations, violation => violation.Contains("exceed", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void PortfolioRiskService_EvaluateTrade_ProducesReductionPlan_WhenPositionBreachesPolicy()
+    {
+        var service = new PortfolioRiskService();
+
+        var assessment = service.EvaluateTrade(
+            portfolioValue: 10000m,
+            availableCash: 200m,
+            proposedPositionValue: 1500m,
+            existingExposureValue: 7000m,
+            sectorExposureValue: 1800m,
+            dailyPortfolioLoss: -100m,
+            portfolioDrawdownPct: 1m);
+
+        Assert.True(assessment.ReductionPlan?.RequiresReduction == true);
+        Assert.True(assessment.ReductionPlan!.ReducedTradeValue < assessment.ProposedPositionValue);
+        Assert.Contains(assessment.Warnings, warning => warning.Contains("Reduce", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -322,7 +342,51 @@ public class Trading212ApplicationTests
         });
 
         Assert.False(result.Allowed);
+        Assert.True(result.DefensiveMode);
         Assert.Contains(result.Warnings, warning => warning.Contains("5% max position size", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void PortfolioRiskService_Evaluate_AdjustsDefensiveMode_WhenThresholdsAreBreached()
+    {
+        var dashboard = new PortfolioDashboard
+        {
+            Summary = new PortfolioSummary
+            {
+                TotalPortfolioValue = 10000m,
+                AvailableCash = 200m,
+                TotalExposurePercent = 96m,
+                DailyPnL = -300m,
+                DefensiveMode = false
+            },
+            Positions =
+            [
+                new PortfolioPositionView
+                {
+                    Symbol = "MSFT",
+                    Sector = "Technology",
+                    Quantity = 20m,
+                    CurrentPrice = 200m
+                }
+            ]
+        };
+
+        var result = new PortfolioRiskService().Evaluate(dashboard, new TradeDecision
+        {
+            Ticker = "NVDA",
+            Sector = "Technology",
+            Side = OrderSide.Buy,
+            Quantity = 30m,
+            EntryPrice = 100m,
+            OrderType = Trading212OrderType.Market,
+            Confidence = 90,
+            StopLoss = 90m,
+            TakeProfit = 130m
+        });
+
+        Assert.True(result.DefensiveMode);
+        Assert.NotNull(result.ReductionPlan);
+        Assert.True(result.ReductionPlan.RequiresReduction || result.Warnings.Count > 0);
     }
 
     [Fact]
