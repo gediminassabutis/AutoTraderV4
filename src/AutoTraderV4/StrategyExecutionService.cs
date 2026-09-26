@@ -6,11 +6,16 @@ public sealed class StrategyExecutionService
 {
     private readonly ApplicationDbContext _context;
     private readonly AuditLogService? _auditLogService;
+    private readonly RiskGovernanceService? _riskGovernanceService;
 
-    public StrategyExecutionService(ApplicationDbContext context, AuditLogService? auditLogService = null)
+    public StrategyExecutionService(
+        ApplicationDbContext context,
+        AuditLogService? auditLogService = null,
+        RiskGovernanceService? riskGovernanceService = null)
     {
         _context = context ?? throw new ArgumentNullException(nameof(context));
         _auditLogService = auditLogService;
+        _riskGovernanceService = riskGovernanceService;
     }
 
     public async Task<TradeDecision> ExecuteAsync(StrategySignal signal, CancellationToken cancellationToken = default)
@@ -23,9 +28,31 @@ public sealed class StrategyExecutionService
         decision.GeneratedAtUtc = now;
         decision.CreatedUtc = now;
         decision.TimestampUtc = now;
-        decision.ExecutionStatus = OrderExecutionStatus.Validated;
-        decision.RiskAssessment = "Within trading constraints";
         decision.ForecastOutput = decision.BuildForecastOutput();
+
+        if (_riskGovernanceService is not null)
+        {
+            var riskContext = new RiskContextSnapshot
+            {
+                Symbol = decision.Ticker,
+                Sector = string.IsNullOrWhiteSpace(decision.Sector) ? "Unknown" : decision.Sector,
+                LiquidityScore = 85m,
+                SpreadPercent = 0.25m,
+                ObservedAtUtc = now
+            };
+
+            var riskAssessment = await _riskGovernanceService.EvaluateAsync(decision, riskContext, cancellationToken);
+            decision.ExecutionStatus = riskAssessment.Approved ? OrderExecutionStatus.Validated : OrderExecutionStatus.Rejected;
+            decision.EligibleForExecution = riskAssessment.Approved && decision.EligibleForExecution;
+            decision.RiskAssessment = riskAssessment.Violations.Count > 0
+                ? string.Join("; ", riskAssessment.Violations)
+                : "Within trading constraints";
+        }
+        else
+        {
+            decision.ExecutionStatus = OrderExecutionStatus.Validated;
+            decision.RiskAssessment = "Within trading constraints";
+        }
 
         _context.StrategySignals.Add(new StrategySignalRecord
         {
@@ -44,7 +71,7 @@ public sealed class StrategyExecutionService
             decision.ApplyAuditMetadata(
                 decision.TriggeringStrategy,
                 recommendation.SignalScores,
-                decision.BuildForecastOutput(),
+                decision.ForecastOutput,
                 decision.RiskAssessment,
                 recommendation.Rating);
             _auditLogService.Record(decision, decision.TriggeringStrategy, recommendation.SignalScores, decision.ForecastOutput, decision.RiskAssessment, recommendation.Rating);

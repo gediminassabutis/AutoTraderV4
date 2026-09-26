@@ -34,21 +34,33 @@ public sealed class AuditLogService
             : forecastOutput;
 
         var normalizedStrategy = string.IsNullOrWhiteSpace(strategy) ? decision.TriggeringStrategy : strategy;
+        var normalizedSignalScores = signalScores is { Count: > 0 }
+            ? signalScores
+            : decision.SignalScores is { Count: > 0 }
+                ? decision.SignalScores
+                : new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
         var normalizedRecommendation = string.IsNullOrWhiteSpace(recommendation)
-            ? decision.RecommendationSummary
+            ? string.IsNullOrWhiteSpace(decision.RecommendationSummary)
+                ? decision.Recommendation
+                : decision.RecommendationSummary
             : recommendation;
+        var normalizedRiskAssessment = string.IsNullOrWhiteSpace(riskAssessment)
+            ? string.IsNullOrWhiteSpace(decision.RiskAssessment)
+                ? "Within trading constraints"
+                : decision.RiskAssessment
+            : riskAssessment;
 
         _entries.Enqueue(new AuditLogEntry
         {
             TimestampUtc = decision.TimestampUtc == default ? DateTimeOffset.UtcNow : decision.TimestampUtc,
             Symbol = decision.Ticker,
             TriggeringStrategy = normalizedStrategy,
-            SignalScores = signalScores ?? decision.SignalScores ?? new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase),
+            SignalScores = normalizedSignalScores,
             ForecastOutput = normalizedForecast,
             Recommendation = normalizedRecommendation,
             EntryPrice = decision.EntryPrice,
             ExitPrice = decision.TakeProfit,
-            RiskAssessment = string.IsNullOrWhiteSpace(riskAssessment) ? decision.RiskAssessment : riskAssessment,
+            RiskAssessment = normalizedRiskAssessment,
             Confidence = decision.Confidence
         });
 

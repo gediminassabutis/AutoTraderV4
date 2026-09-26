@@ -41,14 +41,16 @@ public sealed class AuditLoggingService
             Quantity = decision.Quantity,
             Side = decision.Side.ToString(),
             OrderType = decision.OrderType.ToString(),
-            SignalScoresJson = JsonSerializer.Serialize(decision.SignalScores ?? new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase)
-            {
-                [nameof(decision.FactorBreakdown.TechnicalScore)] = decision.FactorBreakdown.TechnicalScore,
-                [nameof(decision.FactorBreakdown.FundamentalScore)] = decision.FactorBreakdown.FundamentalScore,
-                [nameof(decision.FactorBreakdown.MomentumScore)] = decision.FactorBreakdown.MomentumScore,
-                [nameof(decision.FactorBreakdown.SentimentScore)] = decision.FactorBreakdown.SentimentScore,
-                [nameof(decision.FactorBreakdown.MacroScore)] = decision.FactorBreakdown.MacroScore
-            }, JsonOptions),
+            SignalScoresJson = decision.SignalScores is { Count: > 0 }
+                ? JsonSerializer.Serialize(decision.SignalScores, JsonOptions)
+                : JsonSerializer.Serialize(new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [nameof(decision.FactorBreakdown.TechnicalScore)] = decision.FactorBreakdown.TechnicalScore,
+                    [nameof(decision.FactorBreakdown.FundamentalScore)] = decision.FactorBreakdown.FundamentalScore,
+                    [nameof(decision.FactorBreakdown.MomentumScore)] = decision.FactorBreakdown.MomentumScore,
+                    [nameof(decision.FactorBreakdown.SentimentScore)] = decision.FactorBreakdown.SentimentScore,
+                    [nameof(decision.FactorBreakdown.MacroScore)] = decision.FactorBreakdown.MacroScore
+                }, JsonOptions),
             ForecastJson = string.IsNullOrWhiteSpace(decision.ForecastOutput) ? JsonSerializer.Serialize(decision.Forecast, JsonOptions) : decision.ForecastOutput,
             RiskAssessmentJson = JsonSerializer.Serialize(new
             {
