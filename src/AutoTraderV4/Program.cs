@@ -91,7 +91,7 @@ public partial class Program
 
     private static void ConfigureDatabaseServices(WebApplicationBuilder builder, bool useDemoData)
     {
-        var databaseConfiguration = ResolveDatabaseConfiguration(builder.Configuration, useDemoData);
+        var databaseConfiguration = ResolveDatabaseConfiguration(builder.Configuration, builder.Environment, useDemoData);
 
         builder.Services.AddDbContext<ApplicationDbContext>(options =>
         {
@@ -101,13 +101,14 @@ public partial class Program
                 return;
             }
 
-            options.UseNpgsql(databaseConfiguration.ConnectionString);
+            options.UseNpgsql(databaseConfiguration.ConnectionString ?? throw new InvalidOperationException("A PostgreSQL connection string is required for the configured database provider."));
         });
     }
 
-    private static DatabaseConfiguration ResolveDatabaseConfiguration(IConfiguration configuration, bool useDemoData)
+    private static DatabaseConfiguration ResolveDatabaseConfiguration(IConfiguration configuration, IHostEnvironment environment, bool useDemoData)
     {
         ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(environment);
 
         var configuredUseInMemory = configuration.GetValue<bool?>("Database:UseInMemory")
             ?? configuration.GetValue<bool?>("UseInMemoryDatabase");
@@ -134,41 +135,45 @@ public partial class Program
                     $"Database:UseInMemory is false, but the configured PostgreSQL connection is not reachable. {postgresAvailability.FailureReason}");
             }
 
-            return DatabaseConfiguration.Postgres(postgresAvailability.ConnectionString);
+            return DatabaseConfiguration.Postgres(connectionString);
         }
 
-        if (useDemoData || string.IsNullOrWhiteSpace(connectionString))
+        if (useDemoData || environment.IsDevelopment() || string.IsNullOrWhiteSpace(connectionString))
         {
             return DatabaseConfiguration.InMemory(inMemoryDatabaseName);
         }
 
-        var fallbackAvailability = EvaluatePostgresAvailability(connectionString);
-        return fallbackAvailability.IsReachable
-            ? DatabaseConfiguration.Postgres(fallbackAvailability.ConnectionString)
-            : DatabaseConfiguration.InMemory(inMemoryDatabaseName);
+        var postgresAvailabilityForFallback = EvaluatePostgresAvailability(connectionString);
+        if (!postgresAvailabilityForFallback.IsReachable)
+        {
+            throw new InvalidOperationException(
+                $"The configured PostgreSQL connection is not reachable and the app is not running in demo/development mode. {postgresAvailabilityForFallback.FailureReason}");
+        }
+
+        return DatabaseConfiguration.Postgres(connectionString);
     }
 
     private static PostgresAvailability EvaluatePostgresAvailability(string connectionString)
     {
         try
         {
-            var connectionStringBuilder = new NpgsqlConnectionStringBuilder(connectionString);
-            if (string.IsNullOrWhiteSpace(connectionStringBuilder.Host))
+            var probeConnectionBuilder = new NpgsqlConnectionStringBuilder(connectionString);
+            if (string.IsNullOrWhiteSpace(probeConnectionBuilder.Host))
             {
                 return PostgresAvailability.Unreachable(connectionString, "The PostgreSQL connection string is missing a host.");
             }
 
-            connectionStringBuilder.Timeout = connectionStringBuilder.Timeout is > 0 and <= 2
-                ? connectionStringBuilder.Timeout
+            probeConnectionBuilder.Timeout = probeConnectionBuilder.Timeout is > 0 and <= 2
+                ? probeConnectionBuilder.Timeout
                 : 2;
-            connectionStringBuilder.CommandTimeout = connectionStringBuilder.CommandTimeout is > 0 and <= 2
-                ? connectionStringBuilder.CommandTimeout
+            probeConnectionBuilder.CommandTimeout = probeConnectionBuilder.CommandTimeout is > 0 and <= 2
+                ? probeConnectionBuilder.CommandTimeout
                 : 2;
-            connectionStringBuilder.Pooling = false;
+            probeConnectionBuilder.Pooling = false;
 
-            using var connection = new NpgsqlConnection(connectionStringBuilder.ConnectionString);
+            using var connection = new NpgsqlConnection(probeConnectionBuilder.ConnectionString);
             connection.Open();
-            return PostgresAvailability.Reachable(connectionStringBuilder.ConnectionString);
+            return PostgresAvailability.Reachable(connectionString);
         }
         catch (ArgumentException ex)
         {

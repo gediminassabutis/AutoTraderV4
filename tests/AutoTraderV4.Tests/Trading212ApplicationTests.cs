@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 namespace AutoTraderV4.Tests;
 
@@ -70,9 +71,10 @@ public class Trading212ApplicationTests
     }
 
     [Fact]
-    public void Program_ConfigureServices_UsesInMemoryDatabase_WhenPostgresIsUnreachableAndDatabaseFlagIsUnset()
+    public void Program_ConfigureServices_UsesInMemoryDatabase_WhenPostgresIsUnreachableInDevelopmentAndDatabaseFlagIsUnset()
     {
         var builder = WebApplication.CreateBuilder();
+        builder.Environment.EnvironmentName = Environments.Development;
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["Trading212:UseDemoData"] = "false",
@@ -90,6 +92,26 @@ public class Trading212ApplicationTests
         var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
 
         Assert.True(context.Database.IsInMemory());
+    }
+
+    [Fact]
+    public void Program_ConfigureServices_Throws_WhenPostgresIsUnreachableInProductionAndDatabaseFlagIsUnset()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.Environment.EnvironmentName = Environments.Production;
+        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["ConnectionStrings:DefaultConnection"] = "Host=127.0.0.1;Port=1;Database=autotrader_v4;Username=postgres;Password=postgres",
+            ["Trading212:UseDemoData"] = "false",
+            ["Trading212:ApiKey"] = "demo-key",
+            ["Trading212:ApiSecret"] = "demo-secret",
+            ["Database:UseInMemory"] = null,
+            ["Database:InMemoryDatabaseName"] = "Program_ConfigureServices_ProductionPostgresFailure_Test"
+        });
+
+        var exception = Assert.Throws<InvalidOperationException>(() => Program.ConfigureServices(builder));
+
+        Assert.Contains("not reachable", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -112,9 +134,10 @@ public class Trading212ApplicationTests
     }
 
     [Fact]
-    public void Program_ConfigureServices_UsesInMemoryDatabase_WhenPostgresIsUnreachableAndUseInMemoryIsUnset()
+    public void Program_ConfigureServices_UsesInMemoryDatabase_WhenPostgresIsUnreachableAndUseInMemoryIsUnsetInDevelopment()
     {
         var builder = WebApplication.CreateBuilder();
+        builder.Environment.EnvironmentName = Environments.Development;
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["ConnectionStrings:DefaultConnection"] = "Host=127.0.0.1;Port=1;Database=autotrader_v4;Username=postgres;Password=postgres",

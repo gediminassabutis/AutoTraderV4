@@ -53,7 +53,7 @@ Example:
 }
 ```
 
-Set `ConnectionStrings__DefaultConnection` only when you want to use PostgreSQL. When the in-memory flag is unset, startup probes the configured PostgreSQL endpoint with a short timeout and falls back to the in-memory store if the database is unreachable.
+Set `ConnectionStrings__DefaultConnection` only when you want to use PostgreSQL, and also set `Database__UseInMemory=false` to force the app off the in-memory store. In Development the app will also load secrets from the configured local user-secrets store, so you can keep live credentials out of source control. When the in-memory flag is unset, startup defaults to the in-memory store in local/demo mode and only uses PostgreSQL when the app is not in demo mode and the configured connection is reachable.
 
 The app falls back to demo data automatically when `Trading212:UseDemoData` is `true` or when the API key/secret are left blank. This keeps the dashboard working on a clean machine without a live Trading 212 subscription.
 
