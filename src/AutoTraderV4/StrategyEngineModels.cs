@@ -153,6 +153,15 @@ public sealed class MarketSignalSnapshot
     }
 }
 
+public sealed class ForecastModelOutput
+{
+    public string ModelName { get; set; } = string.Empty;
+    public decimal Weight { get; set; }
+    public decimal ForecastPercent { get; set; }
+    public decimal Confidence { get; set; }
+    public string Rationale { get; set; } = string.Empty;
+}
+
 public sealed class ForecastSnapshot
 {
     public decimal OneDayReturnPercent { get; set; }
@@ -160,6 +169,8 @@ public sealed class ForecastSnapshot
     public decimal ThirtyDayReturnPercent { get; set; }
     public decimal NinetyDayReturnPercent { get; set; }
     public decimal ModelConfidenceScore { get; set; }
+    public string Summary { get; set; } = string.Empty;
+    public List<ForecastModelOutput> ModelOutputs { get; set; } = [];
 
     public Dictionary<string, string[]> Validate(string prefix)
     {

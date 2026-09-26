@@ -62,6 +62,10 @@ public sealed class WeightedStrategyEngineService
         var riskReward = CalculateRiskReward(side, entryPrice, stopLoss, takeProfit);
         var confidenceScore = Clamp(Math.Round((finalScore * 0.60m) + (forecastScore * 0.10m) + (request.Forecast.ModelConfidenceScore * 0.30m), 2, MidpointRounding.AwayFromZero));
 
+        var forecastSummary = !string.IsNullOrWhiteSpace(request.Forecast.Summary)
+            ? request.Forecast.Summary
+            : $"Weighted forecast return: {request.Forecast.OneDayReturnPercent:F1}% 1D, {request.Forecast.FiveDayReturnPercent:F1}% 5D, {request.Forecast.ThirtyDayReturnPercent:F1}% 30D, {request.Forecast.NinetyDayReturnPercent:F1}% 90D.";
+
         return new TradeDecision
         {
             Ticker = symbol,
@@ -82,6 +86,7 @@ public sealed class WeightedStrategyEngineService
             FactorBreakdown = factorBreakdown,
             StrategyBreakdown = strategies,
             Forecast = request.Forecast,
+            ForecastOutput = forecastSummary,
             TopFactors = BuildTopFactors(strategies, factorBreakdown, request),
             EligibleForExecution = finalScore >= 75m && confidenceScore >= 80m && riskReward >= 2.5m,
             GeneratedAtUtc = _timeProvider.GetUtcNow(),
