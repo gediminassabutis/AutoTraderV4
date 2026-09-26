@@ -23,20 +23,34 @@ public sealed class AuditLoggingService
         ArgumentNullException.ThrowIfNull(decision);
         ArgumentNullException.ThrowIfNull(riskAssessment);
 
+        var strategyName = string.IsNullOrWhiteSpace(decision.TriggeringStrategy)
+            ? string.Join(", ", decision.StrategyBreakdown.Select(x => x.Strategy))
+            : decision.TriggeringStrategy;
+
+        var fallbackSignalScores = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase)
+        {
+            [nameof(decision.FactorBreakdown.TechnicalScore)] = decision.FactorBreakdown.TechnicalScore,
+            [nameof(decision.FactorBreakdown.FundamentalScore)] = decision.FactorBreakdown.FundamentalScore,
+            [nameof(decision.FactorBreakdown.MomentumScore)] = decision.FactorBreakdown.MomentumScore,
+            [nameof(decision.FactorBreakdown.SentimentScore)] = decision.FactorBreakdown.SentimentScore,
+            [nameof(decision.FactorBreakdown.MacroScore)] = decision.FactorBreakdown.MacroScore
+        };
+
         var recommendationPayload = new
         {
             symbol = decision.Ticker,
             sector = request.Sector,
             rating = decision.Rating,
+            recommendation = string.IsNullOrWhiteSpace(decision.Recommendation) ? decision.RecommendationSummary : decision.Recommendation,
             confidence = decision.Confidence,
             entryPrice = decision.EntryPrice,
             stopLoss = decision.StopLoss,
             takeProfit = decision.TakeProfit,
             riskReward = decision.RiskReward,
             topFactors = decision.TopFactors,
-            signalScores = decision.SignalScores,
+            signalScores = decision.SignalScores is { Count: > 0 } ? decision.SignalScores : fallbackSignalScores,
             forecast = decision.Forecast,
-            forecastSummary = decision.ForecastOutput,
+            forecastSummary = string.IsNullOrWhiteSpace(decision.ForecastOutput) ? decision.BuildForecastOutput() : decision.ForecastOutput,
             eligibleForExecution = decision.EligibleForExecution,
             finalScore = decision.FinalScore,
             triggeringStrategy = decision.TriggeringStrategy
@@ -47,7 +61,7 @@ public sealed class AuditLoggingService
             Id = Guid.NewGuid(),
             EventType = "strategy-evaluation",
             Symbol = decision.Ticker,
-            StrategyName = string.Join(", ", decision.StrategyBreakdown.Select(x => x.Strategy)),
+            StrategyName = strategyName,
             FinalScore = decision.FinalScore,
             ConfidenceScore = decision.ConfidenceScore,
             EntryPrice = decision.EntryPrice,
@@ -56,11 +70,19 @@ public sealed class AuditLoggingService
             Quantity = decision.Quantity,
             Side = decision.Side.ToString(),
             OrderType = decision.OrderType.ToString(),
-            SignalScoresJson = JsonSerializer.Serialize(decision.SignalScores, JsonOptions),
-            ForecastJson = JsonSerializer.Serialize(decision.Forecast, JsonOptions),
-            RiskAssessmentJson = JsonSerializer.Serialize(riskAssessment, JsonOptions),
+            SignalScoresJson = decision.SignalScores is { Count: > 0 }
+                ? JsonSerializer.Serialize(decision.SignalScores, JsonOptions)
+                : JsonSerializer.Serialize(fallbackSignalScores, JsonOptions),
+            ForecastJson = string.IsNullOrWhiteSpace(decision.ForecastOutput)
+                ? JsonSerializer.Serialize(decision.Forecast, JsonOptions)
+                : decision.ForecastOutput,
+            RiskAssessmentJson = JsonSerializer.Serialize(new
+            {
+                assessment = riskAssessment,
+                summary = string.IsNullOrWhiteSpace(decision.RiskAssessment) ? "Within trading constraints" : decision.RiskAssessment
+            }, JsonOptions),
             RecommendationJson = JsonSerializer.Serialize(recommendationPayload, JsonOptions),
-            CreatedUtc = decision.GeneratedAtUtc
+            CreatedUtc = decision.TimestampUtc == default ? decision.GeneratedAtUtc : decision.TimestampUtc
         };
 
         _context.TradeAuditEntries.Add(entry);

@@ -383,7 +383,10 @@ public partial class Program
         {
             decision.Validate();
             var recommendation = strategyEngineService.BuildRecommendation(decision.Ticker, decision.EntryPrice > 0m ? decision.EntryPrice : 100m);
-            auditLogService.Record(decision, decision.TriggeringStrategy, recommendation.SignalScores, recommendation.Rating, "Risk gate passed");
+            var forecastOutput = decision.ForecastOutput;
+            var riskAssessment = string.IsNullOrWhiteSpace(decision.RiskAssessment) ? "Within trading constraints" : decision.RiskAssessment;
+            var recommendationText = string.IsNullOrWhiteSpace(decision.Recommendation) ? recommendation.Rating : decision.Recommendation;
+            auditLogService.Record(decision, decision.TriggeringStrategy, recommendation.SignalScores, forecastOutput, riskAssessment, recommendationText);
             return Results.Ok(new { decision, recommendation });
         });
 
