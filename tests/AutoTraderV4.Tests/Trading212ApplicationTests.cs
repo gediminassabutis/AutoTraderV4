@@ -167,14 +167,14 @@ public class Trading212ApplicationTests
     }
 
     [Fact]
-    public async Task StrategyExecutionService_ExecuteAsync_PersistsSignalAndDecision()
+    public async Task StrategyExecutionService_ExecuteAsync_PersistsSignalDecisionAndOrderLifecycle()
     {
         var options = new DbContextOptionsBuilder<ApplicationDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
 
         await using var context = new ApplicationDbContext(options);
-        var service = new StrategyExecutionService(context);
+        var service = new StrategyExecutionService(context, new AuditLogService());
 
         var result = await service.ExecuteAsync(new StrategySignal
         {
@@ -187,7 +187,15 @@ public class Trading212ApplicationTests
         Assert.Equal("NVDA_US_EQ", result.Ticker);
         Assert.Equal(OrderSide.Buy, result.Side);
         Assert.Equal(4m, result.Quantity);
+        Assert.Equal(OrderExecutionStatus.Validated, result.ExecutionStatus);
         Assert.Equal(1, await context.StrategySignals.CountAsync());
+
+        var orderRecord = await context.OrderExecutionRecords.SingleAsync();
+        Assert.Equal("NVDA_US_EQ", orderRecord.Ticker);
+        Assert.Equal(result.TriggeringStrategy, orderRecord.StrategyName);
+        Assert.Equal(result.ForecastOutput, orderRecord.ForecastJson);
+        Assert.Contains("Within trading constraints", orderRecord.RiskAssessmentJson, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(result.RecommendationSummary, orderRecord.RecommendationJson, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -352,14 +360,21 @@ public class Trading212ApplicationTests
             Confidence = 88,
             Rating = "Buy",
             TriggeringStrategy = "weighted-strategy",
+            Recommendation = "Buy MSFT for tactical upside",
+            RiskAssessment = "Within limits",
+            ForecastOutput = "{\"oneDayReturnPercent\":1.2,\"fiveDayReturnPercent\":3.7}",
             CreatedUtc = DateTimeOffset.UtcNow
         };
 
-        service.Record(decision, decision.TriggeringStrategy, new Dictionary<string, decimal> { ["Trend"] = 86m }, "Buy", "Within limits");
+        service.Record(decision, decision.TriggeringStrategy, new Dictionary<string, decimal> { ["Trend"] = 86m }, decision.ForecastOutput, decision.RiskAssessment, decision.Recommendation);
         var entries = service.GetRecent();
 
         Assert.Single(entries);
         Assert.Equal("MSFT", entries[0].Symbol);
         Assert.Equal("weighted-strategy", entries[0].TriggeringStrategy);
+        Assert.Equal("Buy MSFT for tactical upside", entries[0].Recommendation);
+        Assert.Equal("Within limits", entries[0].RiskAssessment);
+        Assert.Contains("oneDayReturnPercent", entries[0].ForecastOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(88, entries[0].Confidence);
     }
 }

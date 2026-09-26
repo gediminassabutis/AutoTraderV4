@@ -23,12 +23,16 @@ public sealed class AuditLoggingService
         ArgumentNullException.ThrowIfNull(decision);
         ArgumentNullException.ThrowIfNull(riskAssessment);
 
+        var strategyName = string.IsNullOrWhiteSpace(decision.TriggeringStrategy)
+            ? string.Join(", ", decision.StrategyBreakdown.Select(x => x.Strategy))
+            : decision.TriggeringStrategy;
+
         var entry = new TradeAuditEntry
         {
             Id = Guid.NewGuid(),
             EventType = "strategy-evaluation",
             Symbol = decision.Ticker,
-            StrategyName = string.Join(", ", decision.StrategyBreakdown.Select(x => x.Strategy)),
+            StrategyName = strategyName,
             FinalScore = decision.FinalScore,
             ConfidenceScore = decision.ConfidenceScore,
             EntryPrice = decision.EntryPrice,
@@ -37,19 +41,31 @@ public sealed class AuditLoggingService
             Quantity = decision.Quantity,
             Side = decision.Side.ToString(),
             OrderType = decision.OrderType.ToString(),
-            SignalScoresJson = JsonSerializer.Serialize(decision.StrategyBreakdown, JsonOptions),
-            ForecastJson = JsonSerializer.Serialize(decision.Forecast, JsonOptions),
-            RiskAssessmentJson = JsonSerializer.Serialize(riskAssessment, JsonOptions),
+            SignalScoresJson = JsonSerializer.Serialize(decision.SignalScores ?? new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase)
+            {
+                [nameof(decision.FactorBreakdown.TechnicalScore)] = decision.FactorBreakdown.TechnicalScore,
+                [nameof(decision.FactorBreakdown.FundamentalScore)] = decision.FactorBreakdown.FundamentalScore,
+                [nameof(decision.FactorBreakdown.MomentumScore)] = decision.FactorBreakdown.MomentumScore,
+                [nameof(decision.FactorBreakdown.SentimentScore)] = decision.FactorBreakdown.SentimentScore,
+                [nameof(decision.FactorBreakdown.MacroScore)] = decision.FactorBreakdown.MacroScore
+            }, JsonOptions),
+            ForecastJson = string.IsNullOrWhiteSpace(decision.ForecastOutput) ? JsonSerializer.Serialize(decision.Forecast, JsonOptions) : decision.ForecastOutput,
+            RiskAssessmentJson = JsonSerializer.Serialize(new
+            {
+                assessment = riskAssessment,
+                summary = string.IsNullOrWhiteSpace(decision.RiskAssessment) ? "Within trading constraints" : decision.RiskAssessment
+            }, JsonOptions),
             RecommendationJson = JsonSerializer.Serialize(new
             {
-                request.Symbol,
-                request.Sector,
-                decision.Rating,
-                decision.TopFactors,
-                decision.FactorBreakdown,
-                decision.EligibleForExecution
+                symbol = request.Symbol,
+                sector = request.Sector,
+                rating = decision.Rating,
+                recommendation = string.IsNullOrWhiteSpace(decision.Recommendation) ? decision.RecommendationSummary : decision.Recommendation,
+                topFactors = decision.TopFactors,
+                confidence = decision.Confidence,
+                eligibleForExecution = decision.EligibleForExecution
             }, JsonOptions),
-            CreatedUtc = decision.GeneratedAtUtc
+            CreatedUtc = decision.TimestampUtc == default ? decision.GeneratedAtUtc : decision.TimestampUtc
         };
 
         _context.TradeAuditEntries.Add(entry);

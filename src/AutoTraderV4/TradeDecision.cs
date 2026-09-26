@@ -1,9 +1,24 @@
+using System.Text.Json;
+
 namespace AutoTraderV4;
 
 public enum OrderSide
 {
     Buy,
     Sell
+}
+
+public enum OrderExecutionStatus
+{
+    Created,
+    Validated,
+    Approved,
+    Submitted,
+    Accepted,
+    Rejected,
+    Filled,
+    Cancelled,
+    Closed
 }
 
 public sealed class TradeDecision
@@ -27,8 +42,19 @@ public sealed class TradeDecision
     public decimal RiskReward { get; set; }
     public List<string> TopFactors { get; set; } = [];
     public string TriggeringStrategy { get; set; } = "weighted-strategy";
+    public string Strategy
+    {
+        get => TriggeringStrategy;
+        set => TriggeringStrategy = value;
+    }
     public string RiskAssessment { get; set; } = string.Empty;
     public string ForecastOutput { get; set; } = string.Empty;
+    public string Recommendation { get; set; } = string.Empty;
+    public string RecommendationSummary
+    {
+        get => Recommendation;
+        set => Recommendation = value;
+    }
     public decimal FinalScore { get; set; }
     public decimal CombinedStrategyScore { get; set; }
     public Dictionary<string, decimal> SignalScores { get; set; } = new(StringComparer.OrdinalIgnoreCase);
@@ -36,8 +62,110 @@ public sealed class TradeDecision
     public List<StrategyComponentScore> StrategyBreakdown { get; set; } = [];
     public ForecastSnapshot Forecast { get; set; } = new();
     public bool EligibleForExecution { get; set; }
+    public OrderExecutionStatus ExecutionStatus { get; set; } = OrderExecutionStatus.Created;
+    public string OrderStatus
+    {
+        get => ExecutionStatus.ToString();
+        set => ExecutionStatus = Enum.TryParse<OrderExecutionStatus>(value, true, out var status) ? status : OrderExecutionStatus.Created;
+    }
     public DateTimeOffset GeneratedAtUtc { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset CreatedUtc { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset TimestampUtc
+    {
+        get => GeneratedAtUtc == default ? CreatedUtc : GeneratedAtUtc;
+        set
+        {
+            GeneratedAtUtc = value;
+            CreatedUtc = value;
+        }
+    }
+    public DateTimeOffset LoggedAtUtc
+    {
+        get => TimestampUtc;
+        set => TimestampUtc = value;
+    }
+
+    public void ApplyAuditMetadata(
+        string strategy,
+        Dictionary<string, decimal>? signalScores,
+        string forecastOutput,
+        string riskAssessment,
+        string recommendation)
+    {
+        TimestampUtc = DateTimeOffset.UtcNow;
+        Strategy = strategy;
+        if (signalScores is not null && signalScores.Count > 0)
+        {
+            SignalScores = signalScores;
+        }
+
+        ForecastOutput = string.IsNullOrWhiteSpace(forecastOutput)
+            ? BuildForecastOutput()
+            : forecastOutput;
+
+        RiskAssessment = string.IsNullOrWhiteSpace(riskAssessment) ? "Within trading constraints" : riskAssessment;
+        Recommendation = string.IsNullOrWhiteSpace(recommendation) ? RecommendationSummary : recommendation;
+        RecommendationSummary = Recommendation;
+    }
+
+    public string BuildForecastOutput()
+    {
+        if (!string.IsNullOrWhiteSpace(ForecastOutput))
+        {
+            return ForecastOutput;
+        }
+
+        if (Forecast == null)
+        {
+            return "{}";
+        }
+
+        var payload = new
+        {
+            oneDayReturnPercent = Forecast.OneDayReturnPercent,
+            fiveDayReturnPercent = Forecast.FiveDayReturnPercent,
+            thirtyDayReturnPercent = Forecast.ThirtyDayReturnPercent,
+            ninetyDayReturnPercent = Forecast.NinetyDayReturnPercent,
+            modelConfidenceScore = Forecast.ModelConfidenceScore
+        };
+
+        return JsonSerializer.Serialize(payload, new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        });
+    }
+
+    public OrderExecutionRecord ToOrderExecutionRecord()
+    {
+        return new OrderExecutionRecord
+        {
+            Id = Guid.NewGuid(),
+            Ticker = Ticker,
+            Side = Side.ToString(),
+            Status = ExecutionStatus.ToString(),
+            StrategyName = TriggeringStrategy,
+            Quantity = Quantity,
+            EntryPrice = EntryPrice,
+            StopLoss = StopLoss,
+            TakeProfit = TakeProfit,
+            FinalScore = FinalScore,
+            ConfidenceScore = ConfidenceScore,
+            SignalScoresJson = SignalScores.Count > 0
+                ? JsonSerializer.Serialize(SignalScores)
+                : "{}",
+            ForecastJson = string.IsNullOrWhiteSpace(ForecastOutput)
+                ? BuildForecastOutput()
+                : ForecastOutput,
+            RiskAssessmentJson = string.IsNullOrWhiteSpace(RiskAssessment)
+                ? JsonSerializer.Serialize("Within trading constraints")
+                : JsonSerializer.Serialize(RiskAssessment),
+            RecommendationJson = string.IsNullOrWhiteSpace(Recommendation)
+                ? JsonSerializer.Serialize(RecommendationSummary)
+                : JsonSerializer.Serialize(Recommendation),
+            CreatedUtc = TimestampUtc == default ? DateTimeOffset.UtcNow : TimestampUtc,
+            UpdatedUtc = DateTimeOffset.UtcNow
+        };
+    }
 
     public void Validate()
     {

@@ -9,6 +9,7 @@ public sealed class ApplicationDbContext : DbContext
     public DbSet<MarketSnapshot> MarketSnapshots { get; set; }
     public DbSet<StrategySignalRecord> StrategySignals { get; set; }
     public DbSet<TradeAuditEntry> TradeAuditEntries { get; set; }
+    public DbSet<OrderExecutionRecord> OrderExecutionRecords { get; set; }
 
     public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
         : base(options)
@@ -86,6 +87,26 @@ public sealed class ApplicationDbContext : DbContext
             entity.Property(x => x.CreatedUtc).IsRequired();
             entity.HasIndex(x => new { x.Symbol, x.CreatedUtc });
         });
+
+        modelBuilder.Entity<OrderExecutionRecord>(entity =>
+        {
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Ticker).IsRequired().HasMaxLength(64);
+            entity.Property(x => x.Side).IsRequired().HasMaxLength(16);
+            entity.Property(x => x.Status).IsRequired().HasMaxLength(32);
+            entity.Property(x => x.StrategyName).HasMaxLength(256);
+            entity.Property(x => x.Quantity).HasPrecision(18, 6);
+            entity.Property(x => x.EntryPrice).HasPrecision(18, 6);
+            entity.Property(x => x.StopLoss).HasPrecision(18, 6);
+            entity.Property(x => x.TakeProfit).HasPrecision(18, 6);
+            entity.Property(x => x.SignalScoresJson).IsRequired();
+            entity.Property(x => x.ForecastJson).IsRequired();
+            entity.Property(x => x.RiskAssessmentJson).IsRequired();
+            entity.Property(x => x.RecommendationJson).IsRequired();
+            entity.Property(x => x.CreatedUtc).IsRequired();
+            entity.Property(x => x.UpdatedUtc).IsRequired();
+            entity.HasIndex(x => new { x.Ticker, x.CreatedUtc });
+        });
     }
 }
 
@@ -155,4 +176,25 @@ public sealed class TradeAuditEntry
     public string RiskAssessmentJson { get; set; } = string.Empty;
     public string RecommendationJson { get; set; } = string.Empty;
     public DateTimeOffset CreatedUtc { get; set; }
+}
+
+public sealed class OrderExecutionRecord
+{
+    public Guid Id { get; set; }
+    public string Ticker { get; set; } = string.Empty;
+    public string Side { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public string StrategyName { get; set; } = string.Empty;
+    public decimal Quantity { get; set; }
+    public decimal EntryPrice { get; set; }
+    public decimal StopLoss { get; set; }
+    public decimal TakeProfit { get; set; }
+    public decimal FinalScore { get; set; }
+    public decimal ConfidenceScore { get; set; }
+    public string SignalScoresJson { get; set; } = string.Empty;
+    public string ForecastJson { get; set; } = string.Empty;
+    public string RiskAssessmentJson { get; set; } = string.Empty;
+    public string RecommendationJson { get; set; } = string.Empty;
+    public DateTimeOffset CreatedUtc { get; set; }
+    public DateTimeOffset UpdatedUtc { get; set; }
 }

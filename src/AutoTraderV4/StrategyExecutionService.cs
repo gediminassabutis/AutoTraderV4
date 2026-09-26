@@ -19,8 +19,13 @@ public sealed class StrategyExecutionService
 
         var evaluator = new StrategyEvaluator();
         var decision = evaluator.Evaluate(signal);
-        decision.GeneratedAtUtc = DateTimeOffset.UtcNow;
-        decision.CreatedUtc = DateTimeOffset.UtcNow;
+        var now = DateTimeOffset.UtcNow;
+        decision.GeneratedAtUtc = now;
+        decision.CreatedUtc = now;
+        decision.TimestampUtc = now;
+        decision.ExecutionStatus = OrderExecutionStatus.Validated;
+        decision.RiskAssessment = "Within trading constraints";
+        decision.ForecastOutput = decision.BuildForecastOutput();
 
         _context.StrategySignals.Add(new StrategySignalRecord
         {
@@ -30,16 +35,25 @@ public sealed class StrategyExecutionService
             Quantity = signal.Quantity,
             Side = decision.Side.ToString(),
             OrderType = decision.OrderType.ToString(),
-            CreatedUtc = decision.CreatedUtc
+            CreatedUtc = now
         });
-
-        await _context.SaveChangesAsync(cancellationToken);
 
         if (_auditLogService is not null)
         {
             var recommendation = new StrategyEngineService().BuildRecommendation(decision.Ticker, decision.EntryPrice);
-            _auditLogService.Record(decision, decision.TriggeringStrategy, recommendation.SignalScores, recommendation.Rating, "Within trading constraints");
+            decision.ApplyAuditMetadata(
+                decision.TriggeringStrategy,
+                recommendation.SignalScores,
+                decision.BuildForecastOutput(),
+                decision.RiskAssessment,
+                recommendation.Rating);
+            _auditLogService.Record(decision, decision.TriggeringStrategy, recommendation.SignalScores, decision.ForecastOutput, decision.RiskAssessment, recommendation.Rating);
         }
+
+        var orderRecord = decision.ToOrderExecutionRecord();
+        _context.OrderExecutionRecords.Add(orderRecord);
+
+        await _context.SaveChangesAsync(cancellationToken);
 
         return decision;
     }
