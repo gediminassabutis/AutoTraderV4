@@ -62,6 +62,32 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install UI dependencies
+        working-directory: ui
+        shell: pwsh
+        run: |
+          if (Test-Path package-lock.json) {
+            npm ci
+          }
+          else {
+            npm install
+          }
+
+      - name: Run UI tests
+        working-directory: ui
+        run: npm test -- --run
+
+      - name: Build UI
+        working-directory: ui
+        run: npm run build
+
       - name: Restore dependencies
         run: dotnet restore src/AutoTraderV4/AutoTraderV4.csproj
 
