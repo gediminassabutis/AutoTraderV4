@@ -55,11 +55,11 @@ public partial class Program
         builder.Services.AddScoped<StrategyExecutionService>();
         builder.Services.AddSingleton<PortfolioRiskPolicy>();
         builder.Services.AddScoped<PortfolioRiskService>();
+        builder.Services.AddScoped<global::AutoTraderV4.Services.PortfolioRiskService>();
         builder.Services.AddSingleton<MovingAverageStrategyService>();
         builder.Services.AddSingleton<WeightedStrategyScoringService>();
         builder.Services.AddScoped<IPortfolioDashboardService, PortfolioDashboardService>();
         builder.Services.AddSingleton<StrategyEngineService>();
-        builder.Services.AddSingleton<PortfolioRiskService>();
         builder.Services.AddSingleton<AuditLogService>();
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddScoped<WeightedStrategyEngineService>();
