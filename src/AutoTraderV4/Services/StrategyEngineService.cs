@@ -22,6 +22,9 @@ public sealed class TradeRecommendation
     public decimal RiskReward { get; set; }
     public List<string> TopFactors { get; set; } = [];
     public Dictionary<string, decimal> SignalScores { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public ForecastSnapshot Forecast { get; set; } = new();
+    public string ForecastSummary { get; set; } = string.Empty;
+    public List<ForecastModelOutput> ModelOutputs { get; set; } = [];
 }
 
 public sealed class RecommendationRequest
@@ -71,12 +74,14 @@ public sealed class StrategyEngineService
     {
         var normalizedPrice = price > 0m ? price : 100m;
         var scores = Score(symbol, normalizedPrice);
+        var forecast = new ForecastingService().Generate(symbol, normalizedPrice);
+        var forecastSnapshot = forecast.ToSnapshot();
         var confidence = (int)Math.Round(scores.FinalScore, MidpointRounding.AwayFromZero);
         var stopLoss = normalizedPrice * 0.94m;
         var takeProfit = normalizedPrice * 1.18m;
         var riskReward = (takeProfit - normalizedPrice) / (normalizedPrice - stopLoss);
 
-        return new TradeRecommendation
+        var recommendation = new TradeRecommendation
         {
             Symbol = symbol,
             Rating = scores.Rating,
@@ -93,8 +98,13 @@ public sealed class StrategyEngineService
                 ["MeanReversion"] = scores.MeanReversion,
                 ["EarningsSurprise"] = scores.EarningsSurprise,
                 ["Sentiment"] = scores.Sentiment
-            }
+            },
+            Forecast = forecastSnapshot,
+            ForecastSummary = forecast.Summary,
+            ModelOutputs = forecast.ModelOutputs.ToList()
         };
+
+        return recommendation;
     }
 
     public IReadOnlyList<WatchlistOpportunity> BuildWatchlist()

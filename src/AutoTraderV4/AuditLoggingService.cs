@@ -23,6 +23,25 @@ public sealed class AuditLoggingService
         ArgumentNullException.ThrowIfNull(decision);
         ArgumentNullException.ThrowIfNull(riskAssessment);
 
+        var recommendationPayload = new
+        {
+            symbol = decision.Ticker,
+            sector = request.Sector,
+            rating = decision.Rating,
+            confidence = decision.Confidence,
+            entryPrice = decision.EntryPrice,
+            stopLoss = decision.StopLoss,
+            takeProfit = decision.TakeProfit,
+            riskReward = decision.RiskReward,
+            topFactors = decision.TopFactors,
+            signalScores = decision.SignalScores,
+            forecast = decision.Forecast,
+            forecastSummary = decision.ForecastOutput,
+            eligibleForExecution = decision.EligibleForExecution,
+            finalScore = decision.FinalScore,
+            triggeringStrategy = decision.TriggeringStrategy
+        };
+
         var entry = new TradeAuditEntry
         {
             Id = Guid.NewGuid(),
@@ -37,18 +56,10 @@ public sealed class AuditLoggingService
             Quantity = decision.Quantity,
             Side = decision.Side.ToString(),
             OrderType = decision.OrderType.ToString(),
-            SignalScoresJson = JsonSerializer.Serialize(decision.StrategyBreakdown, JsonOptions),
+            SignalScoresJson = JsonSerializer.Serialize(decision.SignalScores, JsonOptions),
             ForecastJson = JsonSerializer.Serialize(decision.Forecast, JsonOptions),
             RiskAssessmentJson = JsonSerializer.Serialize(riskAssessment, JsonOptions),
-            RecommendationJson = JsonSerializer.Serialize(new
-            {
-                request.Symbol,
-                request.Sector,
-                decision.Rating,
-                decision.TopFactors,
-                decision.FactorBreakdown,
-                decision.EligibleForExecution
-            }, JsonOptions),
+            RecommendationJson = JsonSerializer.Serialize(recommendationPayload, JsonOptions),
             CreatedUtc = decision.GeneratedAtUtc
         };
 

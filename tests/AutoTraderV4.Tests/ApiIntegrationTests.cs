@@ -133,6 +133,26 @@ public class ApiIntegrationTests
     }
 
     [Fact]
+    public async Task StrategyRecommendationEndpoint_ReturnsForecastSummaryAndModelOutputs()
+    {
+        await using var app = await TestWebApplication.CreateAsync();
+
+        using var response = await app.Client.PostAsJsonAsync("/api/strategies/recommend", new
+        {
+            symbol = "NVDA",
+            price = 132.40m
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("NVDA", payload.GetProperty("symbol").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(payload.GetProperty("forecastSummary").GetString()));
+        Assert.True(payload.GetProperty("modelOutputs").GetArrayLength() > 0);
+        Assert.False(string.IsNullOrWhiteSpace(payload.GetProperty("forecast").GetProperty("summary").GetString()));
+        Assert.True(payload.GetProperty("forecast").GetProperty("modelOutputs").GetArrayLength() > 0);
+    }
+
+    [Fact]
     public async Task MovingAverageEndpoint_ReturnsSellDecisionForDowntrend()
     {
         await using var app = await TestWebApplication.CreateAsync();

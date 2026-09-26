@@ -339,6 +339,27 @@ public class Trading212ApplicationTests
     }
 
     [Fact]
+    public void StrategyEngineService_BuildRecommendation_IncludesExplainableForecastMetadata()
+    {
+        var service = new StrategyEngineService();
+
+        var recommendation = service.BuildRecommendation("NVDA", 132.40m);
+
+        Assert.NotNull(recommendation.Forecast);
+        Assert.False(string.IsNullOrWhiteSpace(recommendation.ForecastSummary));
+        Assert.NotEmpty(recommendation.ModelOutputs);
+        Assert.Equal(recommendation.ForecastSummary, recommendation.Forecast.Summary);
+        Assert.Equal(recommendation.ModelOutputs.Count, recommendation.Forecast.ModelOutputs.Count);
+        Assert.All(recommendation.ModelOutputs, model =>
+        {
+            Assert.False(string.IsNullOrWhiteSpace(model.ModelName));
+            Assert.False(string.IsNullOrWhiteSpace(model.Rationale));
+            Assert.True(model.Weight > 0m);
+            Assert.InRange(model.Confidence, 0m, 100m);
+        });
+    }
+
+    [Fact]
     public void AuditLogService_Record_SavesDecisionMetadata()
     {
         var service = new AuditLogService();
