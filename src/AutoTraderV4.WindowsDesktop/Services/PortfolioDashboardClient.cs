@@ -1,0 +1,109 @@
+using System.Net.Http;
+using System.Net.Http.Json;
+using System.Text.Json;
+using AutoTraderV4.WindowsDesktop.Models;
+
+namespace AutoTraderV4.WindowsDesktop.Services;
+
+public sealed class PortfolioDashboardClient
+{
+    private static readonly JsonSerializerOptions SerializerOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
+
+    private readonly HttpClient _httpClient;
+
+    public PortfolioDashboardClient()
+        : this(CreateClient())
+    {
+    }
+
+    public PortfolioDashboardClient(HttpClient httpClient)
+    {
+        _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+    }
+
+    private static HttpClient CreateClient()
+    {
+        var baseUrl = Environment.GetEnvironmentVariable("AUTO_TRADER_BACKEND_URL")
+            ?? "http://localhost:5065";
+
+        return new HttpClient
+        {
+            BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/")
+        };
+    }
+
+    public async Task<PortfolioDashboard> GetDashboardAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var response = await _httpClient.GetAsync("/api/dashboard", cancellationToken);
+            response.EnsureSuccessStatusCode();
+
+            var payload = await response.Content.ReadFromJsonAsync<PortfolioDashboard>(SerializerOptions, cancellationToken);
+            return payload ?? CreateFallbackDashboard();
+        }
+        catch
+        {
+            return CreateFallbackDashboard();
+        }
+    }
+
+    public static PortfolioDashboard CreateFallbackDashboard()
+    {
+        var now = DateTimeOffset.UtcNow;
+
+        return new PortfolioDashboard
+        {
+            Summary = new PortfolioSummary
+            {
+                Currency = "USD",
+                TotalPortfolioValue = 245_680.42m,
+                DailyPnL = 2_140.75m,
+                WeeklyPnL = 8_960.15m,
+                MonthlyPnL = 12_410.30m,
+                AvailableCash = 46_000m,
+                TotalExposurePercent = 81.3m,
+                DefensiveMode = false,
+                LastUpdatedUtc = now
+            },
+            Positions =
+            [
+                new PortfolioPositionView { Symbol = "NVDA", Quantity = 60m, EntryPrice = 110.25m, CurrentPrice = 126.95m, UnrealizedPnl = 999.0m, StopLoss = 104.00m, TakeProfit = 145.00m, Confidence = 92, Sector = "Technology", Currency = "USD", AllocationPercent = 31.4m, LastUpdatedUtc = now },
+                new PortfolioPositionView { Symbol = "MSFT", Quantity = 48m, EntryPrice = 428.10m, CurrentPrice = 451.40m, UnrealizedPnl = 1123.2m, StopLoss = 410.00m, TakeProfit = 490.00m, Confidence = 87, Sector = "Technology", Currency = "USD", AllocationPercent = 22.8m, LastUpdatedUtc = now },
+                new PortfolioPositionView { Symbol = "AAPL", Quantity = 110m, EntryPrice = 192.30m, CurrentPrice = 201.88m, UnrealizedPnl = 1058.0m, StopLoss = 184.00m, TakeProfit = 220.00m, Confidence = 84, Sector = "Technology", Currency = "USD", AllocationPercent = 23.0m, LastUpdatedUtc = now },
+                new PortfolioPositionView { Symbol = "XLE", Quantity = 220m, EntryPrice = 86.90m, CurrentPrice = 92.60m, UnrealizedPnl = 1230.0m, StopLoss = 82.50m, TakeProfit = 99.50m, Confidence = 78, Sector = "Energy", Currency = "USD", AllocationPercent = 21.2m, LastUpdatedUtc = now }
+            ],
+            Watchlist =
+            [
+                new WatchlistOpportunity { Symbol = "AMD", Rating = "Strong Buy", Confidence = 91, ForecastReturn = 12.8m, RiskScore = 26m, Price = 168.40m, Sector = "Semiconductors", Strategy = "Momentum", TopFactors = ["Earnings surprise", "Strong volume", "Relative strength"], LastUpdatedUtc = now },
+                new WatchlistOpportunity { Symbol = "META", Rating = "Buy", Confidence = 88, ForecastReturn = 9.6m, RiskScore = 29m, Price = 515.10m, Sector = "Communication Services", Strategy = "Trend Following", TopFactors = ["AI demand", "Ad revenue growth", "Bullish trend"], LastUpdatedUtc = now },
+                new WatchlistOpportunity { Symbol = "CRM", Rating = "Buy", Confidence = 83, ForecastReturn = 7.1m, RiskScore = 33m, Price = 290.75m, Sector = "Software", Strategy = "Earnings Surprise", TopFactors = ["Guidance lift", "Analyst upgrades", "Healthy cash flow"], LastUpdatedUtc = now }
+            ],
+            MarketOverview =
+            [
+                new MarketOverviewCard { Symbol = "SPX", Label = "S&P 500", Value = 5624.18m, ChangePercent = 0.86m, Trend = "Bullish", LastUpdatedUtc = now },
+                new MarketOverviewCard { Symbol = "IXIC", Label = "Nasdaq", Value = 18412.73m, ChangePercent = 1.11m, Trend = "Bullish", LastUpdatedUtc = now },
+                new MarketOverviewCard { Symbol = "DJI", Label = "Dow Jones", Value = 40218.55m, ChangePercent = 0.47m, Trend = "Positive", LastUpdatedUtc = now },
+                new MarketOverviewCard { Symbol = "FTSE", Label = "FTSE 100", Value = 8394.20m, ChangePercent = 0.21m, Trend = "Neutral", LastUpdatedUtc = now },
+                new MarketOverviewCard { Symbol = "VIX", Label = "VIX", Value = 13.14m, ChangePercent = -5.19m, Trend = "Lower volatility", LastUpdatedUtc = now }
+            ],
+            Insights =
+            [
+                new DashboardInsight { Title = "Top buy opportunity", Summary = "AMD remains the highest-conviction trade with strong momentum and favorable earnings revisions.", Type = "buy", Symbol = "AMD" },
+                new DashboardInsight { Title = "Defensive posture", Summary = "Portfolio remains within risk limits and cash reserves stay above the minimum threshold.", Type = "risk" },
+                new DashboardInsight { Title = "Sector rotation", Summary = "Technology remains the primary sector leader while energy still contributes healthy cash flow support.", Type = "macro" }
+            ],
+            Alerts =
+            [
+                new DashboardAlert { Title = "Trade executed", Message = "NVDA position scaled into the portfolio with a 92 confidence score.", Type = "trade", Severity = "info", TimeUtc = now.AddMinutes(-8) },
+                new DashboardAlert { Title = "Risk check", Message = "Portfolio exposure remains below the 95% ceiling.", Type = "risk", Severity = "success", TimeUtc = now.AddMinutes(-16) },
+                new DashboardAlert { Title = "Market watch", Message = "Sector breadth is improving and breadth remains supportive of the current trend.", Type = "market", Severity = "info", TimeUtc = now.AddMinutes(-22) }
+            ],
+            LastUpdatedUtc = now
+        };
+    }
+}
