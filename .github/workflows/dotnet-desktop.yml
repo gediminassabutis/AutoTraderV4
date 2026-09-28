@@ -82,17 +82,17 @@ jobs:
 
       - name: Run UI tests
         working-directory: ui
-        run: npm test -- --run
+        run: npm test
 
       - name: Build UI
         working-directory: ui
         run: npm run build
 
       - name: Restore dependencies
-        run: dotnet restore src/AutoTraderV4/AutoTraderV4.csproj
+        run: dotnet restore AutoTraderV4.slnx
 
       - name: Build application
-        run: dotnet build src/AutoTraderV4/AutoTraderV4.csproj --configuration ${{ matrix.configuration }} --no-restore
+        run: dotnet build AutoTraderV4.slnx --configuration ${{ matrix.configuration }} --no-restore
 
       - name: Run tests
-        run: dotnet test tests/AutoTraderV4.Tests/AutoTraderV4.Tests.csproj --configuration ${{ matrix.configuration }} --no-build --logger "trx;LogFileName=test-results.trx"
+        run: dotnet test AutoTraderV4.slnx --configuration ${{ matrix.configuration }} --no-build --logger "trx;LogFileName=test-results.trx"
