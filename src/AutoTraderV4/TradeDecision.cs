@@ -227,11 +227,32 @@ public static class OrderExecutionService
         decision.Validate();
 
         var normalizedQuantity = Math.Abs(decision.Quantity);
+        decimal? limitPrice = null;
+        if (decision.OrderType is Trading212OrderType.Limit or Trading212OrderType.StopLimit)
+        {
+            if (decision.EntryPrice > 0m)
+            {
+                limitPrice = decision.EntryPrice;
+            }
+            else if (decision.TakeProfit > 0m)
+            {
+                limitPrice = decision.TakeProfit;
+            }
+        }
+
+        decimal? stopPrice = null;
+        if (decision.OrderType is Trading212OrderType.Stop or Trading212OrderType.StopLimit)
+        {
+            if (decision.StopLoss > 0m)
+            {
+                stopPrice = decision.StopLoss;
+            }
+        }
 
         return decision.Side switch
         {
-            OrderSide.Buy => Trading212OrderRequest.CreateBuy(decision.Ticker, normalizedQuantity, decision.OrderType),
-            OrderSide.Sell => Trading212OrderRequest.CreateSell(decision.Ticker, normalizedQuantity, decision.OrderType),
+            OrderSide.Buy => Trading212OrderRequest.CreateBuy(decision.Ticker, normalizedQuantity, decision.OrderType, limitPrice, stopPrice, Trading212TimeValidity.Day.ToApiValue()),
+            OrderSide.Sell => Trading212OrderRequest.CreateSell(decision.Ticker, normalizedQuantity, decision.OrderType, limitPrice, stopPrice, Trading212TimeValidity.Day.ToApiValue()),
             _ => throw new InvalidOperationException($"Unsupported order side: {decision.Side}")
         };
     }

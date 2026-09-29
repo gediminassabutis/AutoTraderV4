@@ -31,8 +31,8 @@ public class ApiIntegrationTests
         var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(42, payload.GetProperty("id").GetInt64());
         Assert.Equal("USD", payload.GetProperty("currency").GetString());
-        Assert.Equal(12500.50m, payload.GetProperty("cash").GetDecimal());
-        Assert.Equal(48750.25m, payload.GetProperty("equity").GetDecimal());
+        Assert.Equal(12500.50m, payload.GetProperty("cash").GetProperty("availableToTrade").GetDecimal());
+        Assert.Equal(48750.25m, payload.GetProperty("totalValue").GetDecimal());
     }
 
     [Fact]
