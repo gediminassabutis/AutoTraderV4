@@ -274,11 +274,16 @@ button {
 
 .table-wrap {
   overflow-x: auto;
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 1rem;
 }
 
 .data-table {
   width: 100%;
   border-collapse: collapse;
+  background: rgba(15, 23, 42, 0.72);
+  color: #e2e8f0;
 }
 
 .data-table th,
@@ -288,11 +293,21 @@ button {
   border-bottom: 1px solid rgba(148, 163, 184, 0.12);
   white-space: nowrap;
   font-size: 0.95rem;
+  color: inherit;
 }
 
 .data-table th {
   color: #94a3b8;
   font-weight: 600;
+  background: rgba(15, 23, 42, 0.88);
+}
+
+.data-table tbody tr:nth-child(even) {
+  background: rgba(15, 23, 42, 0.42);
+}
+
+.data-table tbody tr:hover {
+  background: rgba(30, 41, 59, 0.8);
 }
 
 .primary-cell {
