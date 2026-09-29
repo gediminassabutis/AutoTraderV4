@@ -17,8 +17,20 @@ public sealed class DemoTrading212Client : ITrading212Client
         {
             Id = 42,
             Currency = "USD",
-            Cash = 12500.50m,
-            Equity = 48750.25m
+            CashDetails = new Trading212Cash
+            {
+                AvailableToTrade = 12500.50m,
+                InPies = 200.25m,
+                ReservedForOrders = 75.50m
+            },
+            Investments = new Trading212Investments
+            {
+                CurrentValue = 25000.50m,
+                RealizedProfitLoss = 1200.25m,
+                TotalCost = 22000.00m,
+                UnrealizedProfitLoss = 3000.50m
+            },
+            TotalValue = 48750.25m
         });
     }
 
@@ -64,6 +76,7 @@ public sealed class Trading212Client : ITrading212Client
     public async Task<Trading212OrderResult> PlaceOrderAsync(Trading212OrderRequest order, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(order);
+        order.Validate();
 
         var endpoint = order.Type switch
         {
@@ -91,35 +104,35 @@ public sealed class Trading212Client : ITrading212Client
             case Trading212OrderType.Limit:
                 if (!order.LimitPrice.HasValue)
                 {
-                    throw new ArgumentException("Limit price is required for limit orders.", nameof(order));
+                    throw new ArgumentException("Limit price is required for limit orders.", "order");
                 }
 
                 payload["limitPrice"] = order.LimitPrice.Value;
-                payload["timeValidity"] = string.IsNullOrWhiteSpace(order.TimeValidity) ? "DAY" : order.TimeValidity;
+                payload["timeValidity"] = Trading212TimeValidityOptions.Normalize(order.TimeValidity);
                 break;
             case Trading212OrderType.Stop:
                 if (!order.StopPrice.HasValue)
                 {
-                    throw new ArgumentException("Stop price is required for stop orders.", nameof(order));
+                    throw new ArgumentException("Stop price is required for stop orders.", "order");
                 }
 
                 payload["stopPrice"] = order.StopPrice.Value;
-                payload["timeValidity"] = string.IsNullOrWhiteSpace(order.TimeValidity) ? "DAY" : order.TimeValidity;
+                payload["timeValidity"] = Trading212TimeValidityOptions.Normalize(order.TimeValidity);
                 break;
             case Trading212OrderType.StopLimit:
                 if (!order.LimitPrice.HasValue)
                 {
-                    throw new ArgumentException("Limit price is required for stop-limit orders.", nameof(order));
+                    throw new ArgumentException("Limit price is required for stop-limit orders.", "order");
                 }
 
                 if (!order.StopPrice.HasValue)
                 {
-                    throw new ArgumentException("Stop price is required for stop-limit orders.", nameof(order));
+                    throw new ArgumentException("Stop price is required for stop-limit orders.", "order");
                 }
 
                 payload["limitPrice"] = order.LimitPrice.Value;
                 payload["stopPrice"] = order.StopPrice.Value;
-                payload["timeValidity"] = string.IsNullOrWhiteSpace(order.TimeValidity) ? "DAY" : order.TimeValidity;
+                payload["timeValidity"] = Trading212TimeValidityOptions.Normalize(order.TimeValidity);
                 break;
             default:
                 throw new NotSupportedException($"Trading 212 order type '{order.Type}' is not supported.");

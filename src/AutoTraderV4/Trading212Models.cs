@@ -34,6 +34,46 @@ public enum Trading212OrderType
     TrailingStop
 }
 
+public enum Trading212TimeValidity
+{
+    Day,
+    GoodTillCancel
+}
+
+public static class Trading212TimeValidityOptions
+{
+    public const string Day = "DAY";
+    public const string GoodTillCancel = "GOOD_TILL_CANCEL";
+
+    public static string Normalize(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return Day;
+        }
+
+        return value.Trim() switch
+        {
+            "DAY" => Day,
+            "day" => Day,
+            "GOOD_TILL_CANCEL" => GoodTillCancel,
+            "good_till_cancel" => GoodTillCancel,
+            "GOOD-TILL-CANCEL" => GoodTillCancel,
+            _ => throw new ArgumentException("Time validity must be either DAY or GOOD_TILL_CANCEL.", nameof(value))
+        };
+    }
+
+    public static string ToApiValue(this Trading212TimeValidity validity)
+    {
+        return validity switch
+        {
+            Trading212TimeValidity.Day => Day,
+            Trading212TimeValidity.GoodTillCancel => GoodTillCancel,
+            _ => throw new ArgumentOutOfRangeException(nameof(validity), validity, "Unsupported Trading 212 time validity.")
+        };
+    }
+}
+
 public sealed record Trading212OrderRequest
 {
     public string Ticker { get; init; } = string.Empty;
@@ -42,25 +82,79 @@ public sealed record Trading212OrderRequest
     public decimal? LimitPrice { get; init; }
     public decimal? StopPrice { get; init; }
     public bool ExtendedHours { get; init; }
-    public string TimeValidity { get; init; } = "DAY";
+    public string TimeValidity { get; init; } = Trading212TimeValidity.Day.ToApiValue();
 
-    public static Trading212OrderRequest CreateBuy(string ticker, decimal quantity, Trading212OrderType type)
+    public void Validate()
+    {
+        if (string.IsNullOrWhiteSpace(Ticker))
+        {
+            throw new ArgumentException("Ticker is required.", nameof(Ticker));
+        }
+
+        if (Quantity == 0m)
+        {
+            throw new ArgumentOutOfRangeException(nameof(Quantity), "Quantity cannot be zero.");
+        }
+
+        switch (Type)
+        {
+            case Trading212OrderType.Market:
+                break;
+            case Trading212OrderType.Limit:
+                if (!LimitPrice.HasValue || LimitPrice.Value <= 0m)
+                {
+                    throw new ArgumentException("Limit price is required for limit orders.", "order");
+                }
+                break;
+            case Trading212OrderType.Stop:
+                if (!StopPrice.HasValue || StopPrice.Value <= 0m)
+                {
+                    throw new ArgumentException("Stop price is required for stop orders.", "order");
+                }
+                break;
+            case Trading212OrderType.StopLimit:
+                if (!LimitPrice.HasValue || LimitPrice.Value <= 0m)
+                {
+                    throw new ArgumentException("Limit price is required for stop-limit orders.", "order");
+                }
+
+                if (!StopPrice.HasValue || StopPrice.Value <= 0m)
+                {
+                    throw new ArgumentException("Stop price is required for stop-limit orders.", "order");
+                }
+                break;
+            case Trading212OrderType.TrailingStop:
+                throw new NotSupportedException("Trailing stop orders are not supported by the Trading 212 client.");
+            default:
+                throw new NotSupportedException($"Trading 212 order type '{Type}' is not supported.");
+        }
+
+        _ = Trading212TimeValidityOptions.Normalize(TimeValidity);
+    }
+
+    public static Trading212OrderRequest CreateBuy(string ticker, decimal quantity, Trading212OrderType type, decimal? limitPrice = null, decimal? stopPrice = null, string? timeValidity = null)
     {
         return new Trading212OrderRequest
         {
             Ticker = ticker,
             Quantity = Math.Abs(quantity),
-            Type = type
+            Type = type,
+            LimitPrice = limitPrice,
+            StopPrice = stopPrice,
+            TimeValidity = Trading212TimeValidityOptions.Normalize(timeValidity)
         };
     }
 
-    public static Trading212OrderRequest CreateSell(string ticker, decimal quantity, Trading212OrderType type)
+    public static Trading212OrderRequest CreateSell(string ticker, decimal quantity, Trading212OrderType type, decimal? limitPrice = null, decimal? stopPrice = null, string? timeValidity = null)
     {
         return new Trading212OrderRequest
         {
             Ticker = ticker,
             Quantity = -Math.Abs(quantity),
-            Type = type
+            Type = type,
+            LimitPrice = limitPrice,
+            StopPrice = stopPrice,
+            TimeValidity = Trading212TimeValidityOptions.Normalize(timeValidity)
         };
     }
 }

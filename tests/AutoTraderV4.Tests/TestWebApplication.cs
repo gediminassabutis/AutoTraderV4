@@ -77,8 +77,20 @@ public sealed class TestWebApplication : IAsyncDisposable
             {
                 Id = 42,
                 Currency = "USD",
-                Cash = 12500.50m,
-                Equity = 48750.25m
+                CashDetails = new Trading212Cash
+                {
+                    AvailableToTrade = 12500.50m,
+                    InPies = 200.25m,
+                    ReservedForOrders = 75.50m
+                },
+                Investments = new Trading212Investments
+                {
+                    CurrentValue = 25000.50m,
+                    RealizedProfitLoss = 1200.25m,
+                    TotalCost = 22000.00m,
+                    UnrealizedProfitLoss = 3000.50m
+                },
+                TotalValue = 48750.25m
             });
         }
 
