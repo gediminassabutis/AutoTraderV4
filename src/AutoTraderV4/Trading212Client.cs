@@ -65,15 +65,68 @@ public sealed class Trading212Client : ITrading212Client
     {
         ArgumentNullException.ThrowIfNull(order);
 
-        var payload = new Dictionary<string, object>
+        var endpoint = order.Type switch
         {
-            ["ticker"] = order.Ticker,
-            ["quantity"] = order.Quantity,
-            ["type"] = order.Type.ToString().ToLowerInvariant()
+            Trading212OrderType.Market => "equity/orders/market",
+            Trading212OrderType.Limit => "equity/orders/limit",
+            Trading212OrderType.Stop => "equity/orders/stop",
+            Trading212OrderType.StopLimit => "equity/orders/stop_limit",
+            _ => throw new NotSupportedException($"Trading 212 order type '{order.Type}' is not supported.")
         };
 
+        var payload = new Dictionary<string, object?>
+        {
+            ["ticker"] = order.Ticker,
+            ["quantity"] = order.Quantity
+        };
+
+        switch (order.Type)
+        {
+            case Trading212OrderType.Market:
+                if (order.ExtendedHours)
+                {
+                    payload["extendedHours"] = true;
+                }
+                break;
+            case Trading212OrderType.Limit:
+                if (!order.LimitPrice.HasValue)
+                {
+                    throw new ArgumentException("Limit price is required for limit orders.", nameof(order));
+                }
+
+                payload["limitPrice"] = order.LimitPrice.Value;
+                payload["timeValidity"] = string.IsNullOrWhiteSpace(order.TimeValidity) ? "DAY" : order.TimeValidity;
+                break;
+            case Trading212OrderType.Stop:
+                if (!order.StopPrice.HasValue)
+                {
+                    throw new ArgumentException("Stop price is required for stop orders.", nameof(order));
+                }
+
+                payload["stopPrice"] = order.StopPrice.Value;
+                payload["timeValidity"] = string.IsNullOrWhiteSpace(order.TimeValidity) ? "DAY" : order.TimeValidity;
+                break;
+            case Trading212OrderType.StopLimit:
+                if (!order.LimitPrice.HasValue)
+                {
+                    throw new ArgumentException("Limit price is required for stop-limit orders.", nameof(order));
+                }
+
+                if (!order.StopPrice.HasValue)
+                {
+                    throw new ArgumentException("Stop price is required for stop-limit orders.", nameof(order));
+                }
+
+                payload["limitPrice"] = order.LimitPrice.Value;
+                payload["stopPrice"] = order.StopPrice.Value;
+                payload["timeValidity"] = string.IsNullOrWhiteSpace(order.TimeValidity) ? "DAY" : order.TimeValidity;
+                break;
+            default:
+                throw new NotSupportedException($"Trading 212 order type '{order.Type}' is not supported.");
+        }
+
         using var content = new StringContent(JsonSerializer.Serialize(payload, JsonOptions.Default), System.Text.Encoding.UTF8, "application/json");
-        using var response = await _httpClient.PostAsync("equity/orders/market", content, cancellationToken).ConfigureAwait(false);
+        using var response = await _httpClient.PostAsync(endpoint, content, cancellationToken).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
 
         var json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
