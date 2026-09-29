@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="../AutoTraderV4.WindowsDesktop/AutoTraderV4.WindowsDesktop.csproj" />
+  <Project Path="AutoTraderV4.csproj" />
+</Solution>

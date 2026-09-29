@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.IO;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -23,37 +25,98 @@ public sealed class PortfolioDashboardClient
     public PortfolioDashboardClient(HttpClient httpClient)
     {
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+        Log($"Initialized dashboard client with base URL: {_httpClient.BaseAddress}");
+    }
+
+    private static string? ReadBackendUrlFromAppSettings()
+    {
+        var configFiles = new[]
+        {
+            Path.Combine(AppContext.BaseDirectory, "appsettings.Development.json"),
+            Path.Combine(AppContext.BaseDirectory, "appsettings.json")
+        };
+
+        foreach (var configFile in configFiles)
+        {
+            if (!File.Exists(configFile))
+            {
+                continue;
+            }
+
+            try
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(configFile));
+                if (document.RootElement.TryGetProperty("AUTO_TRADER_BACKEND_URL", out var value))
+                {
+                    var result = value.GetString();
+                    if (!string.IsNullOrWhiteSpace(result))
+                    {
+                        return result;
+                    }
+                }
+            }
+            catch
+            {
+                // Ignore malformed config files and continue to the next source.
+            }
+        }
+
+        return null;
     }
 
     private static HttpClient CreateClient()
     {
         var baseUrl = Environment.GetEnvironmentVariable("AUTO_TRADER_BACKEND_URL")
+            ?? ReadBackendUrlFromAppSettings()
             ?? "http://localhost:5065";
 
-        return new HttpClient
+        var client = new HttpClient
         {
             BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/")
         };
+
+        Log($"Using backend base URL: {client.BaseAddress}");
+        return client;
+    }
+
+    private static void Log(string message)
+    {
+        var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
+        var formatted = $"[{timestamp}] {message}";
+        Console.WriteLine(formatted);
+        Debug.WriteLine(formatted);
     }
 
     public async Task<PortfolioDashboard> GetDashboardAsync(CancellationToken cancellationToken = default)
     {
         try
         {
+            Log("Requesting dashboard from backend.");
             var response = await _httpClient.GetAsync("/api/dashboard", cancellationToken);
+            Log($"Dashboard response status: {(int)response.StatusCode} {response.StatusCode}.");
+
             response.EnsureSuccessStatusCode();
 
             var payload = await response.Content.ReadFromJsonAsync<PortfolioDashboard>(SerializerOptions, cancellationToken);
-            return payload ?? CreateFallbackDashboard();
+            if (payload is null)
+            {
+                Log("Dashboard payload was null; using fallback data.");
+                return CreateFallbackDashboard();
+            }
+
+            Log("Dashboard retrieved successfully from backend.");
+            return payload;
         }
-        catch
+        catch (Exception ex)
         {
+            Log($"Dashboard request failed: {ex.Message}");
             return CreateFallbackDashboard();
         }
     }
 
     public static PortfolioDashboard CreateFallbackDashboard()
     {
+        Log("Creating fallback dashboard data.");
         var now = DateTimeOffset.UtcNow;
 
         return new PortfolioDashboard
