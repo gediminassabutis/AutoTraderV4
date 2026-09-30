@@ -32,10 +32,12 @@ public sealed class BuyOpportunityDecision
 public sealed class PortfolioReviewService
 {
     private readonly IPortfolioRepository _repository;
+    private readonly MarketDataService _marketDataService;
 
-    public PortfolioReviewService(IPortfolioRepository repository)
+    public PortfolioReviewService(IPortfolioRepository repository, MarketDataService marketDataService)
     {
         _repository = repository ?? throw new ArgumentNullException(nameof(repository));
+        _marketDataService = marketDataService ?? throw new ArgumentNullException(nameof(marketDataService));
     }
 
     public async Task<IReadOnlyList<PortfolioReviewDecision>> ReviewOpenPositionsAsync(CancellationToken cancellationToken = default)
@@ -45,8 +47,15 @@ public sealed class PortfolioReviewService
 
         foreach (var position in positions)
         {
-            var currentPrice = position.CurrentPrice > 0m ? position.CurrentPrice : position.AveragePrice;
-            var averagePrice = position.AveragePrice > 0m ? position.AveragePrice : currentPrice;
+            var averagePrice = position.AveragePrice > 0m ? position.AveragePrice : position.CurrentPrice;
+            var baselinePrice = position.CurrentPrice > 0m ? position.CurrentPrice : averagePrice;
+            var freshMarketQuote = await TryGetFreshQuoteAsync(position.Ticker, cancellationToken);
+            if (freshMarketQuote is null)
+            {
+                continue;
+            }
+
+            var currentPrice = freshMarketQuote.Price > 0m ? freshMarketQuote.Price : baselinePrice;
             var pnlPercent = averagePrice > 0m ? ((currentPrice - averagePrice) / averagePrice) * 100m : 0m;
             var action = "Hold";
             var reason = "Position remains within its risk and target range.";
@@ -89,6 +98,22 @@ public sealed class PortfolioReviewService
 
         return decisions;
     }
+
+    private async Task<MarketDataContract?> TryGetFreshQuoteAsync(string ticker, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(ticker))
+        {
+            return null;
+        }
+
+        var result = await _marketDataService.IngestAsync(ticker, cancellationToken);
+        if (result.Success && result.FreshnessStatus == DataFreshnessStatus.Fresh && result.Data is not null)
+        {
+            return result.Data;
+        }
+
+        return null;
+    }
 }
 
 public sealed class BuyOpportunityService
@@ -96,29 +121,57 @@ public sealed class BuyOpportunityService
     private readonly IPortfolioRepository _repository;
     private readonly StrategyEngineService _strategyEngineService;
     private readonly RiskGovernanceService _riskGovernanceService;
+    private readonly ITrading212Client _trading212Client;
+    private readonly MarketDataService _marketDataService;
 
     public BuyOpportunityService(
         IPortfolioRepository repository,
         StrategyEngineService strategyEngineService,
-        RiskGovernanceService riskGovernanceService)
+        RiskGovernanceService riskGovernanceService,
+        ITrading212Client trading212Client,
+        MarketDataService marketDataService)
     {
         _repository = repository ?? throw new ArgumentNullException(nameof(repository));
         _strategyEngineService = strategyEngineService ?? throw new ArgumentNullException(nameof(strategyEngineService));
         _riskGovernanceService = riskGovernanceService ?? throw new ArgumentNullException(nameof(riskGovernanceService));
+        _trading212Client = trading212Client ?? throw new ArgumentNullException(nameof(trading212Client));
+        _marketDataService = marketDataService ?? throw new ArgumentNullException(nameof(marketDataService));
     }
 
     public async Task<IReadOnlyList<BuyOpportunityDecision>> ScanForBuysAsync(CancellationToken cancellationToken = default)
     {
         var state = await _repository.GetPortfolioStateAsync(cancellationToken);
         var positions = await _repository.GetAllPositionsAsync(cancellationToken);
-        var availableCash = state?.Cash ?? 0m;
 
+        Trading212AccountSummary accountSummary;
+        try
+        {
+            accountSummary = await _trading212Client.GetAccountSummaryAsync(cancellationToken);
+        }
+        catch (Exception)
+        {
+            return [];
+        }
+
+        var availableCash = Math.Max(0m, accountSummary.CashDetails.AvailableToTrade);
         if (availableCash <= 0m)
         {
             return [];
         }
 
-        var buyBudget = Math.Min(availableCash, availableCash * 0.5m);
+        var portfolioValue = Math.Max(state?.TotalValue ?? 0m, accountSummary.TotalValue);
+        if (portfolioValue <= 0m)
+        {
+            return [];
+        }
+
+        var maxPositionValue = portfolioValue * 0.05m;
+        var buyBudget = Math.Min(availableCash, maxPositionValue);
+        if (buyBudget <= 0m)
+        {
+            return [];
+        }
+
         var openTickers = new HashSet<string>(positions.Select(x => x.Ticker), StringComparer.OrdinalIgnoreCase);
         var decisions = new List<BuyOpportunityDecision>();
         var remainingBudget = buyBudget;
@@ -132,26 +185,45 @@ public sealed class BuyOpportunityService
                 break;
             }
 
-            var price = opportunity.Price > 0m ? opportunity.Price : 100m;
-            var maxQuantity = Math.Floor(remainingBudget / price);
-            if (maxQuantity <= 0m)
+            var quote = await TryGetFreshQuoteAsync(opportunity.Symbol, cancellationToken);
+            if (quote is null)
             {
                 continue;
             }
 
-            var quantity = maxQuantity;
+            var price = quote.Price > 0m ? quote.Price : opportunity.Price;
+            if (price <= 0m)
+            {
+                continue;
+            }
+
+            var candidateBudget = Math.Min(remainingBudget, maxPositionValue);
+            var quantity = Math.Floor(candidateBudget / price);
+            if (quantity <= 0m)
+            {
+                continue;
+            }
+
             var estimatedCost = quantity * price;
+            var stopLoss = price * 0.94m;
+            var takeProfit = price * 1.18m;
+            var riskReward = CalculateRiskReward(price, stopLoss, takeProfit);
+            if (riskReward < 2.5m)
+            {
+                continue;
+            }
+
             var trade = new TradeDecision
             {
                 Ticker = opportunity.Symbol,
                 Side = OrderSide.Buy,
                 Quantity = quantity,
                 EntryPrice = price,
-                StopLoss = price * 0.94m,
-                TakeProfit = price * 1.18m,
+                StopLoss = stopLoss,
+                TakeProfit = takeProfit,
                 ConfidenceScore = opportunity.Confidence,
                 Rating = opportunity.Rating,
-                RiskReward = opportunity.ForecastReturn > 0m ? Math.Round(opportunity.ForecastReturn / 9m, 2, MidpointRounding.AwayFromZero) : 2.5m,
+                RiskReward = riskReward,
                 TriggeringStrategy = "Portfolio automation",
                 EligibleForExecution = true
             };
@@ -160,9 +232,9 @@ public sealed class BuyOpportunityService
             {
                 Symbol = opportunity.Symbol,
                 Sector = opportunity.Sector,
-                LiquidityScore = 85m,
-                SpreadPercent = 0.25m,
-                ObservedAtUtc = DateTimeOffset.UtcNow
+                LiquidityScore = BuildLiquidityScore(quote, opportunity),
+                SpreadPercent = BuildSpreadPercent(quote),
+                ObservedAtUtc = quote.TimestampUtc
             };
 
             var riskAssessment = await _riskGovernanceService.EvaluateAsync(trade, riskContext, cancellationToken);
@@ -192,6 +264,63 @@ public sealed class BuyOpportunityService
 
         return decisions;
     }
+
+    private async Task<MarketDataContract?> TryGetFreshQuoteAsync(string symbol, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(symbol))
+        {
+            return null;
+        }
+
+        var result = await _marketDataService.IngestAsync(symbol, cancellationToken);
+        if (result.Success && result.Data is not null)
+        {
+            return result.Data;
+        }
+
+        return null;
+    }
+
+    private static decimal CalculateRiskReward(decimal entryPrice, decimal stopLoss, decimal takeProfit)
+    {
+        if (entryPrice <= 0m || stopLoss >= entryPrice || takeProfit <= entryPrice)
+        {
+            return 0m;
+        }
+
+        var upside = takeProfit - entryPrice;
+        var downside = entryPrice - stopLoss;
+        if (downside <= 0m)
+        {
+            return 0m;
+        }
+
+        return Math.Round(upside / downside, 2, MidpointRounding.AwayFromZero);
+    }
+
+    private static decimal BuildLiquidityScore(MarketDataContract quote, WatchlistOpportunity opportunity)
+    {
+        var volumeScore = quote.Volume is > 0m ? Math.Clamp((decimal)quote.Volume / 10_000_000m * 40m, 0m, 40m) : 0m;
+        var confidenceScore = Math.Clamp(opportunity.Confidence * 0.5m, 0m, 30m);
+        var liquidityScore = 50m + volumeScore + confidenceScore;
+        return Math.Clamp(liquidityScore, 0m, 100m);
+    }
+
+    private static decimal BuildSpreadPercent(MarketDataContract quote)
+    {
+        if (quote.Price <= 0m)
+        {
+            return 0.10m;
+        }
+
+        if (quote.High is null or <= 0m || quote.Low is null or <= 0m)
+        {
+            return 0.10m;
+        }
+
+        var spreadPercent = Math.Abs((decimal)quote.High - (decimal)quote.Low) / quote.Price * 100m;
+        return Math.Clamp(spreadPercent, 0.05m, 5m);
+    }
 }
 
 public sealed class PortfolioAutomationBackgroundService : BackgroundService
@@ -215,9 +344,25 @@ public sealed class PortfolioAutomationBackgroundService : BackgroundService
             await RunAutomationCycleAsync(stoppingToken);
 
             using var timer = new PeriodicTimer(ReviewInterval);
-            while (await timer.WaitForNextTickAsync(stoppingToken))
+            while (!stoppingToken.IsCancellationRequested)
             {
-                await RunAutomationCycleAsync(stoppingToken);
+                try
+                {
+                    if (!await timer.WaitForNextTickAsync(stoppingToken))
+                    {
+                        break;
+                    }
+
+                    await RunAutomationCycleAsync(stoppingToken);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "The portfolio automation cycle failed and will retry on the next interval.");
+                }
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -225,7 +370,7 @@ public sealed class PortfolioAutomationBackgroundService : BackgroundService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "The portfolio automation cycle failed.");
+            _logger.LogError(ex, "The portfolio automation loop failed fatally.");
         }
     }
 
