@@ -92,6 +92,9 @@ public partial class Program
         builder.Services.AddScoped<RiskGovernanceService>();
         builder.Services.AddScoped<AuditLoggingService>();
         builder.Services.AddScoped<PortfolioService>();
+        builder.Services.AddScoped<PortfolioReviewService>();
+        builder.Services.AddScoped<BuyOpportunityService>();
+        builder.Services.AddHostedService<PortfolioAutomationBackgroundService>();
 
         if (includeDatabase)
         {
@@ -286,6 +289,16 @@ public partial class Program
         {
             var positions = await repository.GetAllPositionsAsync(cancellationToken);
             return Results.Ok(positions);
+        });
+
+        app.MapGet("/api/portfolio/review", async (PortfolioReviewService portfolioReviewService, CancellationToken cancellationToken) =>
+        {
+            return Results.Ok(await portfolioReviewService.ReviewOpenPositionsAsync(cancellationToken));
+        });
+
+        app.MapGet("/api/portfolio/buy-opportunities", async (BuyOpportunityService buyOpportunityService, CancellationToken cancellationToken) =>
+        {
+            return Results.Ok(await buyOpportunityService.ScanForBuysAsync(cancellationToken));
         });
 
         app.MapGet("/api/portfolio", async (PortfolioService portfolioService, CancellationToken cancellationToken) =>

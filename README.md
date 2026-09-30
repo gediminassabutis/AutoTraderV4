@@ -57,6 +57,8 @@ Set `ConnectionStrings__DefaultConnection` only when you want to use PostgreSQL.
 
 The app falls back to demo data automatically when `Trading212:UseDemoData` is `true` or when the API key/secret are left blank. This keeps the dashboard working on a clean machine without a live Trading 212 subscription.
 
+On startup, the app also begins a lightweight portfolio automation loop that reviews open positions for sell triggers and scans the watchlist for buy opportunities using the available cash balance. The cycle runs every five minutes by default.
+
 For test-only runs without a PostgreSQL instance, set the app to use EF Core's in-memory database:
 
 ```bash
@@ -114,6 +116,8 @@ The automated suite now includes:
 - `GET /api/watchlist`
 - `GET /api/risk/summary`
 - `GET /api/portfolio`
+- `GET /api/portfolio/review`
+- `GET /api/portfolio/buy-opportunities`
 - `PUT /api/portfolio/state`
 - `PUT /api/portfolio/positions/{ticker}`
 - `GET /api/audit-logs`
