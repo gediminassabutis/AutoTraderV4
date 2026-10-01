@@ -88,6 +88,13 @@ jobs:
         working-directory: ui
         run: npm run build
 
+      - name: Verify backend dashboard assets
+        shell: pwsh
+        run: |
+          if (!(Test-Path src/AutoTraderV4/wwwroot/index.html)) {
+            throw "The UI build did not generate the backend-served dashboard."
+          }
+
       - name: Restore dependencies
         run: dotnet restore AutoTraderV4.slnx
 

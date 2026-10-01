@@ -52,7 +52,8 @@ public sealed class PortfolioRiskService
         decimal existingExposureValue = 0m,
         decimal sectorExposureValue = 0m,
         decimal dailyPortfolioLoss = 0m,
-        decimal portfolioDrawdownPct = 0m)
+        decimal portfolioDrawdownPct = 0m,
+        global::AutoTraderV4.OrderSide side = global::AutoTraderV4.OrderSide.Buy)
     {
         return _inner.BuildTradeReductionPlan(
             portfolioValue,
@@ -61,6 +62,7 @@ public sealed class PortfolioRiskService
             existingExposureValue,
             sectorExposureValue,
             dailyPortfolioLoss,
-            portfolioDrawdownPct);
+            portfolioDrawdownPct,
+            side);
     }
 }

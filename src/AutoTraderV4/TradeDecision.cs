@@ -179,6 +179,16 @@ public sealed class TradeDecision
             throw new ArgumentOutOfRangeException(nameof(Quantity), "Quantity must be greater than zero.");
         }
 
+        if (!Enum.IsDefined(typeof(OrderSide), Side))
+        {
+            throw new ArgumentOutOfRangeException(nameof(Side), "Side is not supported.");
+        }
+
+        if (!Enum.IsDefined(typeof(Trading212OrderType), OrderType))
+        {
+            throw new ArgumentOutOfRangeException(nameof(OrderType), "OrderType is not supported.");
+        }
+
         if (EntryPrice < 0m)
         {
             throw new ArgumentOutOfRangeException(nameof(EntryPrice), "EntryPrice cannot be negative.");
@@ -202,6 +212,11 @@ public sealed class TradeDecision
         if (Confidence is < 0 or > 100)
         {
             throw new ArgumentOutOfRangeException(nameof(Confidence), "Confidence must be between 0 and 100.");
+        }
+
+        if (FinalScore is < 0m or > 100m)
+        {
+            throw new ArgumentOutOfRangeException(nameof(FinalScore), "FinalScore must be between 0 and 100.");
         }
 
         if (EntryPrice > 0m && StopLoss > 0m && TakeProfit > 0m)

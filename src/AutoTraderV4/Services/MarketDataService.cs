@@ -55,6 +55,9 @@ public sealed record MarketDataContract
     public decimal? Low { get; init; }
     public decimal? Close { get; init; }
     public decimal? Volume { get; init; }
+    public decimal? LiquidityScore { get; init; }
+    public decimal? SpreadPercent { get; init; }
+    public bool IsSynthetic { get; init; } = true;
     public DateTimeOffset TimestampUtc { get; init; } = DateTimeOffset.UtcNow;
     public string Source { get; init; } = "market-data";
     public string ProviderName { get; init; } = "unknown";
@@ -80,6 +83,16 @@ public sealed record MarketDataContract
             throw new ArgumentOutOfRangeException(nameof(Volume), "Volume cannot be negative.");
         }
 
+        if (LiquidityScore is < 0m or > 100m)
+        {
+            throw new ArgumentOutOfRangeException(nameof(LiquidityScore), "LiquidityScore must be between 0 and 100.");
+        }
+
+        if (SpreadPercent is < 0m or > 25m)
+        {
+            throw new ArgumentOutOfRangeException(nameof(SpreadPercent), "SpreadPercent must be between 0 and 25.");
+        }
+
         if (TimestampUtc == default)
         {
             throw new ArgumentOutOfRangeException(nameof(TimestampUtc), "TimestampUtc is required.");
@@ -90,6 +103,11 @@ public sealed record MarketDataContract
     {
         var reference = referenceTimeUtc ?? DateTimeOffset.UtcNow;
         var freshness = DataFreshnessRules.Evaluate(TimestampUtc, FreshnessWindow, reference);
+        var metadata = new Dictionary<string, object>(Metadata, StringComparer.OrdinalIgnoreCase)
+        {
+            ["isSynthetic"] = IsSynthetic,
+            ["freshnessWindowSeconds"] = (int)FreshnessWindow.TotalSeconds
+        };
 
         return new MarketSnapshot
         {
@@ -107,7 +125,7 @@ public sealed record MarketDataContract
             ReceivedAtUtc = reference,
             DataAgeSeconds = (decimal)Math.Max(0, (reference - TimestampUtc).TotalSeconds),
             FreshnessStatus = freshness.ToString(),
-            MetadataJson = JsonSerializer.Serialize(Metadata),
+            MetadataJson = JsonSerializer.Serialize(metadata),
             LastUpdatedUtc = TimestampUtc,
         };
     }
@@ -228,6 +246,7 @@ public sealed class MarketDataService
 
         var normalizedSymbol = symbol.Trim();
         var providerFailures = new List<string>();
+        MarketDataContract? bestFreshSyntheticCandidate = null;
         MarketDataContract? bestStaleCandidate = null;
 
         foreach (var provider in _providers)
@@ -247,6 +266,13 @@ public sealed class MarketDataService
                 var freshness = DataFreshnessRules.Evaluate(candidate.TimestampUtc, candidate.FreshnessWindow, reference);
                 if (freshness == DataFreshnessStatus.Fresh)
                 {
+                    if (candidate.IsSynthetic)
+                    {
+                        providerFailures.Add($"{candidate.ProviderName}: synthetic data cannot be used for execution");
+                        bestFreshSyntheticCandidate ??= candidate;
+                        continue;
+                    }
+
                     var snapshot = candidate.ToSnapshot(reference);
                     _context.MarketSnapshots.Add(snapshot);
                     await _context.SaveChangesAsync(cancellationToken);
@@ -265,10 +291,32 @@ public sealed class MarketDataService
                 providerFailures.Add($"{candidate.ProviderName}: stale data ({candidate.TimestampUtc:O})");
                 bestStaleCandidate ??= candidate;
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 providerFailures.Add($"{provider.GetType().Name}: {ex.Message}");
             }
+        }
+
+        if (bestFreshSyntheticCandidate is not null)
+        {
+            var reference = _timeProvider.GetUtcNow();
+            var syntheticSnapshot = bestFreshSyntheticCandidate.ToSnapshot(reference);
+            _context.MarketSnapshots.Add(syntheticSnapshot);
+            await _context.SaveChangesAsync(cancellationToken);
+
+            return new MarketDataIngestionResult
+            {
+                Success = true,
+                FreshnessStatus = DataFreshnessStatus.Fresh,
+                ActiveProvider = bestFreshSyntheticCandidate.ProviderName,
+                Data = bestFreshSyntheticCandidate,
+                PersistedSnapshot = syntheticSnapshot,
+                Failures = providerFailures
+            };
         }
 
         if (bestStaleCandidate is not null)

@@ -16,12 +16,6 @@ import {
   YAxis,
 } from 'recharts';
 
-const currencyFormatter = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-  maximumFractionDigits: 0,
-});
-
 const percentFormatter = new Intl.NumberFormat('en-US', {
   style: 'percent',
   minimumFractionDigits: 1,
@@ -30,6 +24,7 @@ const percentFormatter = new Intl.NumberFormat('en-US', {
 
 const defaultDashboard = {
   summary: {
+    currency: 'USD',
     totalPortfolioValue: 200000,
     dailyPnL: 1200,
     weeklyPnL: 3500,
@@ -140,6 +135,15 @@ const defaultDashboard = {
   ],
 };
 
+function formatCurrency(value, currency = 'USD') {
+  const currencyCode = /^[A-Za-z]{3}$/.test(currency) ? currency.toUpperCase() : 'USD';
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: currencyCode,
+    maximumFractionDigits: 0,
+  }).format(Number(value ?? 0));
+}
+
 function formatMarketValue(market) {
   const changeValue = Number.isFinite(market.change ?? market.changePercent) ? market.change ?? market.changePercent : 0;
   return market.symbol === 'VIX' ? `${Number(market.value).toFixed(2)}` : Number(market.value).toLocaleString(undefined, { maximumFractionDigits: 2 });
@@ -203,23 +207,23 @@ export default function App() {
         <div className="summary-grid">
           <article className="metric-card highlight">
             <span>Total Portfolio Value</span>
-            <strong>{currencyFormatter.format(summary.totalPortfolioValue)}</strong>
+            <strong>{formatCurrency(summary.totalPortfolioValue, summary.currency)}</strong>
           </article>
           <article className="metric-card">
             <span>Daily P&amp;L</span>
-            <strong>{currencyFormatter.format(summary.dailyPnL)}</strong>
+            <strong>{formatCurrency(summary.dailyPnL, summary.currency)}</strong>
           </article>
           <article className="metric-card">
             <span>Weekly P&amp;L</span>
-            <strong>{currencyFormatter.format(summary.weeklyPnL)}</strong>
+            <strong>{formatCurrency(summary.weeklyPnL, summary.currency)}</strong>
           </article>
           <article className="metric-card">
             <span>Monthly P&amp;L</span>
-            <strong>{currencyFormatter.format(summary.monthlyPnL)}</strong>
+            <strong>{formatCurrency(summary.monthlyPnL, summary.currency)}</strong>
           </article>
           <article className="metric-card">
             <span>Available Cash</span>
-            <strong>{currencyFormatter.format(summary.availableCash)}</strong>
+            <strong>{formatCurrency(summary.availableCash, summary.currency)}</strong>
           </article>
           <article className="metric-card">
             <span>Total Exposure %</span>
@@ -252,11 +256,11 @@ export default function App() {
                   <tr key={position.symbol}>
                     <td>{position.symbol}</td>
                     <td>{position.quantity}</td>
-                    <td>{currencyFormatter.format(position.entryPrice)}</td>
-                    <td>{currencyFormatter.format(position.currentPrice)}</td>
-                    <td>{currencyFormatter.format(position.unrealizedPnl)}</td>
-                    <td>{currencyFormatter.format(position.stopLoss)}</td>
-                    <td>{currencyFormatter.format(position.takeProfit)}</td>
+                    <td>{formatCurrency(position.entryPrice, position.currency || summary.currency)}</td>
+                    <td>{formatCurrency(position.currentPrice, position.currency || summary.currency)}</td>
+                    <td>{formatCurrency(position.unrealizedPnl, position.currency || summary.currency)}</td>
+                    <td>{position.stopLoss == null ? 'Not configured' : formatCurrency(position.stopLoss, position.currency || summary.currency)}</td>
+                    <td>{position.takeProfit == null ? 'Not configured' : formatCurrency(position.takeProfit, position.currency || summary.currency)}</td>
                     <td>{position.confidence}</td>
                   </tr>
                 ))}

@@ -6,6 +6,7 @@ namespace AutoTraderV4;
 public interface ITrading212Client
 {
     Task<Trading212AccountSummary> GetAccountSummaryAsync(CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<Trading212Position>> GetPositionsAsync(CancellationToken cancellationToken = default);
     Task<Trading212OrderResult> PlaceOrderAsync(Trading212OrderRequest order, CancellationToken cancellationToken = default);
 }
 
@@ -32,6 +33,11 @@ public sealed class DemoTrading212Client : ITrading212Client
             },
             TotalValue = 48750.25m
         });
+    }
+
+    public Task<IReadOnlyList<Trading212Position>> GetPositionsAsync(CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult<IReadOnlyList<Trading212Position>>([]);
     }
 
     public Task<Trading212OrderResult> PlaceOrderAsync(Trading212OrderRequest order, CancellationToken cancellationToken = default)
@@ -71,6 +77,16 @@ public sealed class Trading212Client : ITrading212Client
         var json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
         return JsonSerializer.Deserialize<Trading212AccountSummary>(json, JsonOptions.Default)
             ?? throw new InvalidOperationException("Account summary payload was empty.");
+    }
+
+    public async Task<IReadOnlyList<Trading212Position>> GetPositionsAsync(CancellationToken cancellationToken = default)
+    {
+        using var response = await _httpClient.GetAsync("equity/positions", cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+
+        var json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        return JsonSerializer.Deserialize<List<Trading212Position>>(json, JsonOptions.Default)
+            ?? throw new InvalidOperationException("Positions payload was empty.");
     }
 
     public async Task<Trading212OrderResult> PlaceOrderAsync(Trading212OrderRequest order, CancellationToken cancellationToken = default)

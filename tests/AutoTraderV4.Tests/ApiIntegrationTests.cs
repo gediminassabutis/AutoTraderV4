@@ -70,7 +70,7 @@ public class ApiIntegrationTests
     }
 
     [Fact]
-    public async Task OrdersEndpoint_ReturnsAcceptedOrderResult()
+    public async Task OrdersEndpoint_RejectsRawOrderSubmission()
     {
         await using var app = await TestWebApplication.CreateAsync();
 
@@ -81,11 +81,9 @@ public class ApiIntegrationTests
             Type = Trading212OrderType.Market
         });
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(HttpStatusCode.NotImplemented, response.StatusCode);
         var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal(99, payload.GetProperty("id").GetInt64());
-        Assert.Equal("NVDA_US_EQ", payload.GetProperty("ticker").GetString());
-        Assert.Equal("accepted", payload.GetProperty("status").GetString());
+        Assert.Equal("Direct order submission is disabled.", payload.GetProperty("title").GetString());
     }
 
     [Fact]
@@ -133,7 +131,7 @@ public class ApiIntegrationTests
     }
 
     [Fact]
-    public async Task StrategyRecommendationEndpoint_ReturnsForecastSummaryAndModelOutputs()
+    public async Task StrategyRecommendationEndpoint_DisablesSyntheticScorer()
     {
         await using var app = await TestWebApplication.CreateAsync();
 
@@ -143,13 +141,7 @@ public class ApiIntegrationTests
             price = 132.40m
         });
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal("NVDA", payload.GetProperty("symbol").GetString());
-        Assert.False(string.IsNullOrWhiteSpace(payload.GetProperty("forecastSummary").GetString()));
-        Assert.True(payload.GetProperty("modelOutputs").GetArrayLength() > 0);
-        Assert.False(string.IsNullOrWhiteSpace(payload.GetProperty("forecast").GetProperty("summary").GetString()));
-        Assert.True(payload.GetProperty("forecast").GetProperty("modelOutputs").GetArrayLength() > 0);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
     }
 
     [Fact]
@@ -178,6 +170,21 @@ public class ApiIntegrationTests
         await using var app = await TestWebApplication.CreateAsync(context =>
         {
             var now = DateTimeOffset.UtcNow;
+            MarketSnapshot Snapshot(string ticker, decimal price, DateTimeOffset lastUpdatedUtc) => new()
+            {
+                Id = Guid.NewGuid(),
+                Ticker = ticker,
+                Symbol = ticker,
+                Price = price,
+                Source = "test-provider",
+                ProviderName = "verified-test-provider",
+                FetchedAtUtc = lastUpdatedUtc,
+                ReceivedAtUtc = now,
+                DataAgeSeconds = (decimal)(now - lastUpdatedUtc).TotalSeconds,
+                FreshnessStatus = "Fresh",
+                MetadataJson = "{\"isSynthetic\":false,\"freshnessWindowSeconds\":300}",
+                LastUpdatedUtc = lastUpdatedUtc
+            };
 
             context.Positions.Add(new PortfolioPosition
             {
@@ -199,49 +206,12 @@ public class ApiIntegrationTests
             });
 
             context.MarketSnapshots.AddRange(
-                new MarketSnapshot
-                {
-                    Id = Guid.NewGuid(),
-                    Ticker = "NVDA",
-                    Price = 125m,
-                    LastUpdatedUtc = now.AddMinutes(-20)
-                },
-                new MarketSnapshot
-                {
-                    Id = Guid.NewGuid(),
-                    Ticker = "NVDA",
-                    Price = 128m,
-                    LastUpdatedUtc = now.AddMinutes(-10)
-                },
-                new MarketSnapshot
-                {
-                    Id = Guid.NewGuid(),
-                    Ticker = "MSFT",
-                    Price = 418m,
-                    LastUpdatedUtc = now.AddMinutes(-20)
-                },
-                new MarketSnapshot
-                {
-                    Id = Guid.NewGuid(),
-                    Ticker = "MSFT",
-                    Price = 421m,
-                    LastUpdatedUtc = now.AddMinutes(-10)
-                },
-                new MarketSnapshot
-                {
-                    Id = Guid.NewGuid(),
-                    Ticker = "SPX",
-                    Price = 5400m,
-                    LastUpdatedUtc = now.AddMinutes(-20)
-                },
-                new MarketSnapshot
-                {
-                    Id = Guid.NewGuid(),
-                    Ticker = "SPX",
-                    Price = 5435m,
-                    LastUpdatedUtc = now.AddMinutes(-10)
-                }
-            );
+                Snapshot("NVDA", 125m, now.AddMinutes(-2)),
+                Snapshot("NVDA", 128m, now.AddMinutes(-1)),
+                Snapshot("MSFT", 418m, now.AddMinutes(-2)),
+                Snapshot("MSFT", 421m, now.AddMinutes(-1)),
+                Snapshot("SPX", 5400m, now.AddMinutes(-2)),
+                Snapshot("SPX", 5435m, now.AddMinutes(-1)));
 
             context.StrategySignals.Add(new StrategySignalRecord
             {
@@ -455,5 +425,175 @@ public class ApiIntegrationTests
         Assert.False(payload.GetProperty("risk").GetProperty("approved").GetBoolean());
         Assert.True(payload.GetProperty("risk").GetProperty("defensiveModeActivated").GetBoolean());
         Assert.True(payload.GetProperty("risk").GetProperty("violations").GetArrayLength() >= 1);
+    }
+
+    [Fact]
+    public async Task RiskGovernanceEndpoint_RejectsBuy_WhenClaimedRiskRewardExceedsPriceDerivedValue()
+    {
+        await using var app = await TestWebApplication.CreateAsync(context =>
+        {
+            context.PortfolioStates.Add(new PortfolioStateRecord
+            {
+                Id = Guid.NewGuid(),
+                TotalValue = 100000m,
+                Cash = 20000m,
+                PeakPortfolioValue = 100000m,
+                UpdatedAtUtc = DateTimeOffset.UtcNow
+            });
+            context.Positions.Add(new PortfolioPosition
+            {
+                Id = Guid.NewGuid(),
+                Ticker = "JPM",
+                Sector = "Financials",
+                Quantity = 80m,
+                AveragePrice = 1000m,
+                CurrentPrice = 1000m,
+                Currency = "USD",
+                UpdatedAtUtc = DateTimeOffset.UtcNow
+            });
+        });
+
+        using var response = await app.Client.PostAsJsonAsync("/api/risk/governance/evaluate", new RiskEvaluationRequest
+        {
+            CandidateTrade = new TradeDecision
+            {
+                Ticker = "NVDA",
+                Sector = "Technology",
+                Side = OrderSide.Buy,
+                Quantity = 50m,
+                OrderType = Trading212OrderType.Market,
+                EntryPrice = 100m,
+                StopLoss = 95m,
+                TakeProfit = 105m,
+                RiskReward = 3m,
+                FinalScore = 82m,
+                EligibleForExecution = true,
+                ConfidenceScore = 90m
+            },
+            Context = new RiskContextSnapshot
+            {
+                Symbol = "NVDA",
+                Sector = "Technology",
+                LiquidityScore = 90m,
+                SpreadPercent = 0.2m,
+                ObservedAtUtc = DateTimeOffset.UtcNow
+            }
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var risk = payload.GetProperty("risk");
+        Assert.False(risk.GetProperty("approved").GetBoolean());
+        Assert.Equal(1m, risk.GetProperty("calculatedRiskReward").GetDecimal());
+        Assert.Contains(
+            risk.GetProperty("violations").EnumerateArray().Select(item => item.GetString()),
+            message => message is not null && message.Contains("Calculated risk/reward", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task RiskGovernanceEndpoint_AllowsRiskReducingSellDuringDefensiveMode()
+    {
+        await using var app = await TestWebApplication.CreateAsync(context =>
+        {
+            context.PortfolioStates.Add(new PortfolioStateRecord
+            {
+                Id = Guid.NewGuid(),
+                TotalValue = 100000m,
+                Cash = 4000m,
+                DailyProfitLoss = -2500m,
+                PeakPortfolioValue = 100000m,
+                DefensiveModeActive = true,
+                UpdatedAtUtc = DateTimeOffset.UtcNow
+            });
+            context.Positions.Add(new PortfolioPosition
+            {
+                Id = Guid.NewGuid(),
+                Ticker = "MSFT",
+                Sector = "Technology",
+                Quantity = 96m,
+                AveragePrice = 1000m,
+                CurrentPrice = 1000m,
+                Currency = "USD",
+                UpdatedAtUtc = DateTimeOffset.UtcNow
+            });
+        });
+
+        using var response = await app.Client.PostAsJsonAsync("/api/risk/governance/evaluate", new RiskEvaluationRequest
+        {
+            CandidateTrade = new TradeDecision
+            {
+                Ticker = "MSFT",
+                Side = OrderSide.Sell,
+                Quantity = 2m,
+                OrderType = Trading212OrderType.Market
+            },
+            Context = new RiskContextSnapshot
+            {
+                Symbol = "MSFT",
+                Sector = "Technology",
+                LiquidityScore = 85m,
+                SpreadPercent = 0.2m,
+                ObservedAtUtc = DateTimeOffset.UtcNow
+            }
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var risk = payload.GetProperty("risk");
+        Assert.True(risk.GetProperty("approved").GetBoolean());
+        Assert.True(risk.GetProperty("defensiveModeActivated").GetBoolean());
+        Assert.Equal(94m, risk.GetProperty("projectedExposurePercent").GetDecimal());
+    }
+
+    [Fact]
+    public async Task RiskGovernanceEndpoint_RejectsBuyWithoutScoreEligibilityAndProtectiveLevels()
+    {
+        await using var app = await TestWebApplication.CreateAsync(context =>
+        {
+            context.PortfolioStates.Add(new PortfolioStateRecord
+            {
+                Id = Guid.NewGuid(),
+                TotalValue = 100000m,
+                Cash = 30000m,
+                PeakPortfolioValue = 100000m,
+                UpdatedAtUtc = DateTimeOffset.UtcNow
+            });
+        });
+
+        using var response = await app.Client.PostAsJsonAsync("/api/risk/governance/evaluate", new RiskEvaluationRequest
+        {
+            CandidateTrade = new TradeDecision
+            {
+                Ticker = "NVDA",
+                Side = OrderSide.Buy,
+                Quantity = 1m,
+                OrderType = Trading212OrderType.Market,
+                EntryPrice = 100m,
+                StopLoss = 0m,
+                TakeProfit = 0m,
+                RiskReward = 4m,
+                FinalScore = 70m,
+                ConfidenceScore = 85m,
+                EligibleForExecution = false
+            },
+            Context = new RiskContextSnapshot
+            {
+                Symbol = "NVDA",
+                Sector = "Technology",
+                LiquidityScore = 90m,
+                SpreadPercent = 0.2m,
+                ObservedAtUtc = DateTimeOffset.UtcNow
+            }
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var violations = payload.GetProperty("risk").GetProperty("violations")
+            .EnumerateArray()
+            .Select(item => item.GetString())
+            .ToList();
+        Assert.Contains(violations, message => message?.Contains("Final score", StringComparison.Ordinal) == true);
+        Assert.Contains(violations, message => message?.Contains("not marked eligible", StringComparison.Ordinal) == true);
+        Assert.Contains(violations, message => message?.Contains("stop-loss", StringComparison.Ordinal) == true);
     }
 }

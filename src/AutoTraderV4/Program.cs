@@ -23,6 +23,7 @@ public partial class Program
 
         var app = builder.Build();
         ConfigureApp(app);
+        await EnsureDatabaseCreatedAsync(app.Services);
         await app.RunAsync();
     }
 
@@ -89,7 +90,18 @@ public partial class Program
         builder.Services.AddScoped<SentimentService>();
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddScoped<WeightedStrategyEngineService>();
-        builder.Services.AddScoped<RiskGovernanceService>();
+        builder.Services.AddScoped<PortfolioStateSyncService>(serviceProvider =>
+            new PortfolioStateSyncService(
+                serviceProvider.GetRequiredService<IPortfolioRepository>(),
+                serviceProvider.GetRequiredService<ITrading212Client>(),
+                serviceProvider.GetRequiredService<TimeProvider>(),
+                useDemoData));
+        builder.Services.AddScoped<RiskGovernanceService>(serviceProvider =>
+            new RiskGovernanceService(
+                serviceProvider.GetRequiredService<IPortfolioRepository>(),
+                serviceProvider.GetRequiredService<TimeProvider>(),
+                serviceProvider.GetRequiredService<PortfolioStateSyncService>(),
+                useDemoData));
         builder.Services.AddScoped<AuditLoggingService>();
         builder.Services.AddScoped<PortfolioService>();
         builder.Services.AddScoped<PortfolioReviewService>();
@@ -98,7 +110,7 @@ public partial class Program
 
         if (includeDatabase)
         {
-            ConfigureDatabaseServices(builder, useDemoData);
+            ConfigureDatabaseServices(builder);
         }
 
         builder.Services.AddEndpointsApiExplorer();
@@ -109,9 +121,9 @@ public partial class Program
         });
     }
 
-    private static void ConfigureDatabaseServices(WebApplicationBuilder builder, bool useDemoData)
+    private static void ConfigureDatabaseServices(WebApplicationBuilder builder)
     {
-        var databaseConfiguration = ResolveDatabaseConfiguration(builder.Configuration, useDemoData);
+        var databaseConfiguration = ResolveDatabaseConfiguration(builder.Configuration);
 
         builder.Services.AddDbContext<ApplicationDbContext>(options =>
         {
@@ -125,7 +137,7 @@ public partial class Program
         });
     }
 
-    private static DatabaseConfiguration ResolveDatabaseConfiguration(IConfiguration configuration, bool useDemoData)
+    private static DatabaseConfiguration ResolveDatabaseConfiguration(IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);
 
@@ -139,33 +151,35 @@ public partial class Program
             return DatabaseConfiguration.InMemory(inMemoryDatabaseName);
         }
 
-        if (configuredUseInMemory is false)
+        if (string.IsNullOrWhiteSpace(connectionString))
         {
-            if (string.IsNullOrWhiteSpace(connectionString))
+            if (configuredUseInMemory is false)
             {
                 throw new InvalidOperationException(
                     "Database:UseInMemory is false, but ConnectionStrings:DefaultConnection is not configured.");
             }
 
-            var postgresAvailability = EvaluatePostgresAvailability(connectionString);
-            if (!postgresAvailability.IsReachable)
-            {
-                throw new InvalidOperationException(
-                    $"Database:UseInMemory is false, but the configured PostgreSQL connection is not reachable. {postgresAvailability.FailureReason}");
-            }
-
-            return DatabaseConfiguration.Postgres(postgresAvailability.ConnectionString);
-        }
-
-        if (useDemoData || string.IsNullOrWhiteSpace(connectionString))
-        {
             return DatabaseConfiguration.InMemory(inMemoryDatabaseName);
         }
 
-        var fallbackAvailability = EvaluatePostgresAvailability(connectionString);
-        return fallbackAvailability.IsReachable
-            ? DatabaseConfiguration.Postgres(fallbackAvailability.ConnectionString)
-            : DatabaseConfiguration.InMemory(inMemoryDatabaseName);
+        var availability = EvaluatePostgresAvailability(connectionString);
+        if (!availability.IsReachable)
+        {
+            throw new InvalidOperationException(
+                $"The configured PostgreSQL connection is not reachable. {availability.FailureReason}");
+        }
+
+        return DatabaseConfiguration.Postgres(availability.ConnectionString);
+    }
+
+    private static async Task EnsureDatabaseCreatedAsync(IServiceProvider services)
+    {
+        await using var scope = services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetService<ApplicationDbContext>();
+        if (context is not null)
+        {
+            await context.Database.EnsureCreatedAsync();
+        }
     }
 
     private static PostgresAvailability EvaluatePostgresAvailability(string connectionString)
@@ -258,10 +272,8 @@ public partial class Program
             return Results.Ok(await dashboardService.GetSummaryAsync(cancellationToken));
         });
 
-        app.MapGet("/api/watchlist", (StrategyEngineService strategyEngineService) =>
-        {
-            return Results.Ok(strategyEngineService.BuildWatchlist());
-        });
+        app.MapGet("/api/watchlist", async (IPortfolioDashboardService dashboardService, CancellationToken cancellationToken) =>
+            Results.Ok((await dashboardService.GetDashboardAsync(cancellationToken)).Watchlist));
 
         app.MapGet("/api/risk/summary", async ([FromServices] IPortfolioDashboardService dashboardService, [FromServices] global::AutoTraderV4.PortfolioRiskService riskService, CancellationToken cancellationToken) =>
         {
@@ -338,11 +350,11 @@ public partial class Program
             return Results.Ok(new { position = persistedPosition, auditLogId = auditEntry.Id });
         });
 
-        app.MapPost("/api/orders", async (Trading212OrderRequest request, ITrading212Client client, CancellationToken cancellationToken) =>
-        {
-            var result = await client.PlaceOrderAsync(request, cancellationToken);
-            return Results.Ok(result);
-        });
+        app.MapPost("/api/orders", () =>
+            Results.Problem(
+                title: "Direct order submission is disabled.",
+                detail: "Broker orders are unavailable until an authenticated, risk-governed execution workflow is configured.",
+                statusCode: StatusCodes.Status501NotImplemented));
 
         app.MapPost("/api/trades/decision", (TradeDecision decision) =>
         {
@@ -376,15 +388,17 @@ public partial class Program
             return Results.Ok(new { risk = result, auditLogId = auditEntry.Id });
         });
 
-        app.MapPost("/api/strategies/recommend", (RecommendationRequest request, StrategyEngineService strategyEngineService) =>
+        app.MapPost("/api/strategies/recommend", (RecommendationRequest request) =>
         {
             if (string.IsNullOrWhiteSpace(request.Symbol))
             {
                 return Results.BadRequest(new { error = "Ticker symbol is required." });
             }
 
-            var recommendation = strategyEngineService.BuildRecommendation(request.Symbol, request.Price > 0m ? request.Price : 100m);
-            return Results.Ok(recommendation);
+            return Results.Problem(
+                title: "Strategy recommendations are unavailable.",
+                detail: "This scorer currently uses synthetic factor inputs; recommendations are disabled until verified market and strategy data are connected.",
+                statusCode: StatusCodes.Status503ServiceUnavailable);
         });
 
         app.MapPost("/api/strategies/recommendations", async (StrategyEvaluationRequest request, WeightedStrategyEngineService strategyEngineService, RiskGovernanceService riskGovernanceService, AuditLoggingService auditLoggingService, CancellationToken cancellationToken) =>

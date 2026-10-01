@@ -116,6 +116,49 @@ public class ResilientIngestionTests
     }
 
     [Fact]
+    public async Task MarketDataService_IngestAsync_PrefersRealDataOverFreshSyntheticData()
+    {
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        await using var context = new ApplicationDbContext(options);
+        var service = new MarketDataService(
+            context,
+            new IMarketDataProvider[]
+            {
+                new StaticMarketDataProvider(new MarketDataContract
+                {
+                    Symbol = "NVDA",
+                    Price = 100m,
+                    TimestampUtc = DateTimeOffset.UtcNow,
+                    Source = "demo",
+                    ProviderName = "demo-market-data"
+                }),
+                new StaticMarketDataProvider(new MarketDataContract
+                {
+                    Symbol = "NVDA",
+                    Price = 125m,
+                    LiquidityScore = 90m,
+                    SpreadPercent = 0.2m,
+                    IsSynthetic = false,
+                    TimestampUtc = DateTimeOffset.UtcNow,
+                    Source = "provider",
+                    ProviderName = "real-market-data"
+                })
+            },
+            TimeProvider.System);
+
+        var result = await service.IngestAsync("NVDA");
+
+        Assert.True(result.Success);
+        Assert.False(result.Data!.IsSynthetic);
+        Assert.Equal("real-market-data", result.ActiveProvider);
+        Assert.Equal(1, await context.MarketSnapshots.CountAsync());
+        Assert.Equal("real-market-data", (await context.MarketSnapshots.SingleAsync()).ProviderName);
+    }
+
+    [Fact]
     public async Task MarketDataService_IngestAsync_PersistsStaleState_WhenAllProvidersAreStale()
     {
         var options = new DbContextOptionsBuilder<ApplicationDbContext>()
