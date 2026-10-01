@@ -3,6 +3,7 @@ import App from './App.jsx';
 
 const mockDashboard = {
   summary: {
+    currency: 'GBP',
     totalPortfolioValue: 200000,
     dailyPnL: 1200,
     weeklyPnL: 3500,
@@ -97,6 +98,7 @@ describe('App', () => {
 
     expect(await screen.findByText(/Portfolio Summary/i)).toBeInTheDocument();
     expect(screen.getByText('Total Portfolio Value')).toBeInTheDocument();
+    expect(screen.getByText('£200,000')).toBeInTheDocument();
     expect(screen.getByText('Daily P&L')).toBeInTheDocument();
     expect(screen.getByText('Weekly P&L')).toBeInTheDocument();
     expect(screen.getByText('Monthly P&L')).toBeInTheDocument();

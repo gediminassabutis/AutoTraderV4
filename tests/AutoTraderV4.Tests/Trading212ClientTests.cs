@@ -61,6 +61,58 @@ public class Trading212ClientTests
     }
 
     [Fact]
+    public async Task GetPositionsAsync_ParsesAccountCurrencyWalletValues()
+    {
+        const string responseJson = """
+        [
+          {
+            "instrument": {
+              "currency": "USD",
+              "ticker": "AAPL_US_EQ"
+            },
+            "quantity": 5,
+            "averagePricePaid": 100,
+            "currentPrice": 120,
+            "walletImpact": {
+              "currency": "USD",
+              "currentValue": 600,
+              "totalCost": 500,
+              "unrealizedProfitLoss": 100
+            }
+          }
+        ]
+        """;
+
+        using var client = new HttpClient(new RecordingHttpMessageHandler((request, _) =>
+        {
+            Assert.Equal(HttpMethod.Get, request.Method);
+            Assert.Equal("https://demo.trading212.com/api/v0/equity/positions", request.RequestUri!.ToString());
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(responseJson, Encoding.UTF8, "application/json")
+            };
+        }));
+
+        var sut = new Trading212Client(client, new Trading212Options
+        {
+            BaseUrl = "https://demo.trading212.com",
+            ApiKey = "demo-key",
+            ApiSecret = "demo-secret"
+        });
+
+        var positions = await sut.GetPositionsAsync();
+
+        var position = Assert.Single(positions);
+        Assert.Equal("AAPL_US_EQ", position.Instrument.Ticker);
+        Assert.Equal(5m, position.Quantity);
+        Assert.Equal(100m, position.AveragePricePaid);
+        Assert.Equal(120m, position.CurrentPrice);
+        Assert.Equal("USD", position.WalletImpact!.Currency);
+        Assert.Equal(600m, position.WalletImpact.CurrentValue);
+        Assert.Equal(500m, position.WalletImpact.TotalCost);
+    }
+
+    [Fact]
     public async Task PlaceOrderAsync_Market_SendsExpectedPayloadAndParsesOrderResult()
     {
         const string responseJson = """

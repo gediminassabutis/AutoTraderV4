@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 
 namespace AutoTraderV4.Services;
@@ -55,6 +56,7 @@ public sealed class WatchlistOpportunity
     public decimal ForecastReturn { get; set; }
     public decimal RiskScore { get; set; }
     public decimal Price { get; set; }
+    public bool IsSynthetic { get; set; } = true;
     public string Sector { get; set; } = string.Empty;
     public string Strategy { get; set; } = string.Empty;
     public List<string> TopFactors { get; set; } = [];
@@ -149,25 +151,29 @@ public sealed class PortfolioDashboardService : IPortfolioDashboardService
     ];
 
     private readonly ApplicationDbContext _context;
-    private readonly ITrading212Client _trading212Client;
+    private readonly PortfolioStateSyncService _portfolioStateSyncService;
 
-    public PortfolioDashboardService(ApplicationDbContext context, ITrading212Client trading212Client)
+    public PortfolioDashboardService(
+        ApplicationDbContext context,
+        PortfolioStateSyncService portfolioStateSyncService)
     {
         _context = context ?? throw new ArgumentNullException(nameof(context));
-        _trading212Client = trading212Client ?? throw new ArgumentNullException(nameof(trading212Client));
+        _portfolioStateSyncService = portfolioStateSyncService ?? throw new ArgumentNullException(nameof(portfolioStateSyncService));
     }
 
     public async Task<PortfolioSummary> GetSummaryAsync(CancellationToken cancellationToken = default)
     {
+        await _portfolioStateSyncService.EnsureFreshAsync(cancellationToken);
         var dashboardContext = await LoadDashboardContextAsync(cancellationToken);
-        var accountSummary = await _trading212Client.GetAccountSummaryAsync(cancellationToken);
+        var accountSummary = await _portfolioStateSyncService.GetAccountSummaryAsync(cancellationToken);
         return BuildSummary(dashboardContext, accountSummary);
     }
 
     public async Task<PortfolioDashboard> GetDashboardAsync(CancellationToken cancellationToken = default)
     {
+        await _portfolioStateSyncService.EnsureFreshAsync(cancellationToken);
         var dashboardContext = await LoadDashboardContextAsync(cancellationToken);
-        var accountSummary = await _trading212Client.GetAccountSummaryAsync(cancellationToken);
+        var accountSummary = await _portfolioStateSyncService.GetAccountSummaryAsync(cancellationToken);
         var positions = BuildPositions(dashboardContext.Positions, dashboardContext.LatestSnapshotsByTicker, dashboardContext.LatestSignalsByTicker);
         var portfolioHistory = BuildPortfolioHistory(dashboardContext.Positions, dashboardContext.Snapshots);
         var watchlist = BuildWatchlist(
@@ -175,6 +181,7 @@ public sealed class PortfolioDashboardService : IPortfolioDashboardService
                 dashboardContext.Signals,
                 dashboardContext.SnapshotsByTicker,
                 dashboardContext.LatestSnapshotsByTicker)
+            .Where(opportunity => !opportunity.IsSynthetic)
             .Take(20)
             .ToList();
         var marketOverview = BuildMarketOverview(dashboardContext.SnapshotsByTicker).ToList();
@@ -205,10 +212,12 @@ public sealed class PortfolioDashboardService : IPortfolioDashboardService
             .AsNoTracking()
             .OrderBy(position => position.Ticker)
             .ToListAsync(cancellationToken);
-        var snapshots = await _context.MarketSnapshots
+        var snapshots = (await _context.MarketSnapshots
             .AsNoTracking()
             .OrderBy(snapshot => snapshot.LastUpdatedUtc)
-            .ToListAsync(cancellationToken);
+            .ToListAsync(cancellationToken))
+            .Where(IsUsableMarketSnapshot)
+            .ToList();
         var signals = await _context.StrategySignals
             .AsNoTracking()
             .OrderByDescending(signal => signal.CreatedUtc)
@@ -271,7 +280,9 @@ public sealed class PortfolioDashboardService : IPortfolioDashboardService
             {
                 var currentPrice = latestSnapshotsByTicker.TryGetValue(position.Ticker, out var snapshot)
                     ? snapshot.Price
-                    : position.AveragePrice;
+                    : position.CurrentPrice > 0m
+                        ? position.CurrentPrice
+                        : position.AveragePrice;
                 return new
                 {
                     Position = position,
@@ -287,8 +298,8 @@ public sealed class PortfolioDashboardService : IPortfolioDashboardService
             {
                 latestSignalsByTicker.TryGetValue(item.Position.Ticker, out var latestSignal);
                 int? confidence = latestSignal is null ? null : CalculateConfidence(latestSignal.Signal);
-                decimal? stopLoss = latestSignal is null ? null : RoundTo2(item.CurrentPrice * 0.95m);
-                decimal? takeProfit = latestSignal is null ? null : RoundTo2(item.CurrentPrice * 1.125m);
+                decimal? stopLoss = item.Position.StopLoss > 0m ? RoundTo2(item.Position.StopLoss) : null;
+                decimal? takeProfit = item.Position.TakeProfit > 0m ? RoundTo2(item.Position.TakeProfit) : null;
                 var unrealizedPnl = (item.CurrentPrice - item.Position.AveragePrice) * item.Position.Quantity;
 
                 return new PortfolioPositionView
@@ -322,10 +333,9 @@ public sealed class PortfolioDashboardService : IPortfolioDashboardService
         IReadOnlyDictionary<string, List<MarketSnapshot>> snapshotsByTicker,
         IReadOnlyDictionary<string, MarketSnapshot> latestSnapshotsByTicker)
     {
-        var positionLookup = positions.ToDictionary(position => position.Ticker, StringComparer.OrdinalIgnoreCase);
-
         return signals
             .GroupBy(signal => signal.Ticker, StringComparer.OrdinalIgnoreCase)
+            .Where(group => latestSnapshotsByTicker.ContainsKey(group.Key))
             .Select(group =>
             {
                 var latestSignal = group.OrderByDescending(signal => signal.CreatedUtc).First();
@@ -333,9 +343,7 @@ public sealed class PortfolioDashboardService : IPortfolioDashboardService
                 var confidence = CalculateConfidence(latestSignal.Signal);
                 var latestPrice = latestSnapshotsByTicker.TryGetValue(latestSignal.Ticker, out var snapshot)
                     ? snapshot.Price
-                    : positionLookup.TryGetValue(latestSignal.Ticker, out var position)
-                        ? position.AveragePrice
-                        : 0m;
+                    : 0m;
                 var volatility = snapshotsByTicker.TryGetValue(latestSignal.Ticker, out var tickerSnapshots)
                     ? CalculateVolatilityPercent(tickerSnapshots)
                     : 0m;
@@ -348,6 +356,7 @@ public sealed class PortfolioDashboardService : IPortfolioDashboardService
                     ForecastReturn = RoundTo2(latestSignal.Signal * 8m),
                     RiskScore = RoundTo2(Math.Min(100m, 20m + volatility)),
                     Price = RoundTo2(latestPrice),
+                    IsSynthetic = false,
                     Sector = InferSector(latestSignal.Ticker),
                     Strategy = ChooseStrategy(latestSignal.Signal, volatility),
                     TopFactors = BuildTopFactors(latestSignal.Signal, volatility),
@@ -356,6 +365,42 @@ public sealed class PortfolioDashboardService : IPortfolioDashboardService
             })
             .OrderByDescending(opportunity => opportunity.Confidence)
             .ThenByDescending(opportunity => opportunity.ForecastReturn);
+    }
+
+    private static bool IsUsableMarketSnapshot(MarketSnapshot snapshot)
+    {
+        if (!string.Equals(snapshot.FreshnessStatus, nameof(DataFreshnessStatus.Fresh), StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var metadata = JsonDocument.Parse(snapshot.MetadataJson);
+            var root = metadata.RootElement;
+            if (!root.TryGetProperty("isSynthetic", out var isSynthetic)
+                || isSynthetic.ValueKind != JsonValueKind.False)
+            {
+                return false;
+            }
+
+            var freshnessSeconds = DataFreshnessRules.DefaultMarketFreshnessSeconds;
+            if (root.TryGetProperty("freshnessWindowSeconds", out var configuredWindow)
+                && (configuredWindow.ValueKind != JsonValueKind.Number
+                    || !configuredWindow.TryGetInt32(out freshnessSeconds)
+                    || freshnessSeconds <= 0))
+            {
+                return false;
+            }
+
+            return DataFreshnessRules.Evaluate(
+                snapshot.FetchedAtUtc,
+                TimeSpan.FromSeconds(freshnessSeconds)) == DataFreshnessStatus.Fresh;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static IEnumerable<MarketOverviewCard> BuildMarketOverview(

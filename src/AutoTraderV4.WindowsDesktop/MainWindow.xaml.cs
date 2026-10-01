@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Globalization;
 using AutoTraderV4.WindowsDesktop.Services;
 using AutoTraderV4.WindowsDesktop.ViewModels;
 
@@ -34,11 +35,12 @@ public partial class MainWindow : Window
 
     private void BindViewModel()
     {
-        PortfolioValueText.Text = FormatCurrency(_viewModel.Dashboard.Summary.TotalPortfolioValue);
-        CashText.Text = FormatCurrency(_viewModel.Dashboard.Summary.AvailableCash);
-        DailyPnLText.Text = FormatCurrency(_viewModel.Dashboard.Summary.DailyPnL);
-        WeeklyPnLText.Text = FormatCurrency(_viewModel.Dashboard.Summary.WeeklyPnL);
-        MonthlyPnLText.Text = FormatCurrency(_viewModel.Dashboard.Summary.MonthlyPnL);
+        var currency = _viewModel.Dashboard.Summary.Currency;
+        PortfolioValueText.Text = FormatCurrency(_viewModel.Dashboard.Summary.TotalPortfolioValue, currency);
+        CashText.Text = FormatCurrency(_viewModel.Dashboard.Summary.AvailableCash, currency);
+        DailyPnLText.Text = FormatCurrency(_viewModel.Dashboard.Summary.DailyPnL, currency);
+        WeeklyPnLText.Text = FormatCurrency(_viewModel.Dashboard.Summary.WeeklyPnL, currency);
+        MonthlyPnLText.Text = FormatCurrency(_viewModel.Dashboard.Summary.MonthlyPnL, currency);
         ExposureText.Text = $"{_viewModel.Dashboard.Summary.TotalExposurePercent:F2}%";
         StatusText.Text = _viewModel.StatusMessage;
 
@@ -49,10 +51,12 @@ public partial class MainWindow : Window
         AlertsList.ItemsSource = _viewModel.Alerts;
     }
 
-    private static string FormatCurrency(decimal value)
+    private static string FormatCurrency(decimal value, string? currency)
     {
-        return value >= 0
-            ? $"${value:N2}"
-            : $"-${Math.Abs(value):N2}";
+        var currencyCode = string.IsNullOrWhiteSpace(currency) ? "USD" : currency.Trim().ToUpperInvariant();
+        var amount = Math.Abs(value).ToString("N2", CultureInfo.CurrentCulture);
+        return value >= 0m
+            ? $"{currencyCode} {amount}"
+            : $"-{currencyCode} {amount}";
     }
 }

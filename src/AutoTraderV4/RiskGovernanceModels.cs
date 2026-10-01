@@ -83,6 +83,7 @@ public sealed class RiskAssessmentResult
     public decimal ProjectedSectorExposurePercent { get; set; }
     public decimal DailyLossPercent { get; set; }
     public decimal DrawdownPercent { get; set; }
+    public decimal CalculatedRiskReward { get; set; }
     public List<string> Violations { get; set; } = [];
     public List<string> RecommendedActions { get; set; } = [];
 }

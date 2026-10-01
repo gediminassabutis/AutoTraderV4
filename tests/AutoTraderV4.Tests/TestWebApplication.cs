@@ -37,6 +37,7 @@ public sealed class TestWebApplication : IAsyncDisposable
         {
             ["ConnectionStrings:DefaultConnection"] = "Host=localhost;Database=autotrader_test;Username=postgres;Password=postgres",
             ["Trading212:BaseUrl"] = "https://demo.trading212.com",
+            ["Trading212:UseDemoData"] = "true",
             ["Trading212:ApiKey"] = "demo-key",
             ["Trading212:ApiSecret"] = "demo-secret"
         });
@@ -92,6 +93,11 @@ public sealed class TestWebApplication : IAsyncDisposable
                 },
                 TotalValue = 48750.25m
             });
+        }
+
+        public Task<IReadOnlyList<Trading212Position>> GetPositionsAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<IReadOnlyList<Trading212Position>>([]);
         }
 
         public Task<Trading212OrderResult> PlaceOrderAsync(Trading212OrderRequest order, CancellationToken cancellationToken = default)

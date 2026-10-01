@@ -192,12 +192,53 @@ public sealed class PortfolioRiskService
             throw new ArgumentOutOfRangeException(nameof(portfolioValue), "Portfolio value must be greater than zero.");
         }
 
+        if (!Enum.IsDefined(typeof(OrderSide), side))
+        {
+            throw new ArgumentOutOfRangeException(nameof(side), "Side is not supported.");
+        }
+
         var maxPositionValue = portfolioValue * _policy.MaxPositionPct / 100m;
         var maxExposureValue = portfolioValue * _policy.MaxPortfolioExposurePct / 100m;
         var maxSectorValue = portfolioValue * _policy.MaxSectorExposurePct / 100m;
         var minimumCashValue = portfolioValue * _policy.MinCashReservePct / 100m;
         var requiredReduction = 0m;
         var reasons = new List<string>();
+
+        if (side == OrderSide.Sell)
+        {
+            var maximumSellValue = Math.Min(existingExposureValue, sectorExposureValue);
+            var acceptedSellValue = Math.Min(proposedPositionValue, Math.Max(0m, maximumSellValue));
+            requiredReduction = proposedPositionValue - acceptedSellValue;
+            if (requiredReduction > 0m)
+            {
+                reasons.Add($"Reduce sell value by {requiredReduction:F2}; the synchronized portfolio or sector exposure is smaller than the requested sale.");
+            }
+
+            if (dailyPortfolioLoss / portfolioValue * 100m < -_policy.MaxDailyLossPct)
+            {
+                reasons.Add($"Daily loss is below the {_policy.MaxDailyLossPct}% threshold; remain in defensive mode.");
+            }
+
+            if (portfolioDrawdownPct > _policy.MaxPortfolioDrawdownPct)
+            {
+                reasons.Add($"Portfolio drawdown is above the {_policy.MaxPortfolioDrawdownPct}% threshold; remain in defensive mode.");
+            }
+
+            var remainingExposure = Math.Max(0m, existingExposureValue - acceptedSellValue);
+            var projectedCash = availableCash + acceptedSellValue;
+            var sellPlan = new TradeReductionPlan
+            {
+                RequiresReduction = requiredReduction > 0m,
+                OriginalTradeValue = proposedPositionValue,
+                ReducedTradeValue = acceptedSellValue,
+                ReducedQuantity = acceptedSellValue,
+                PositionPercentAfterReduction = (remainingExposure / portfolioValue) * 100m,
+                ExposurePercentAfterReduction = (remainingExposure / portfolioValue) * 100m,
+                CashReservePercentAfterReduction = (projectedCash / portfolioValue) * 100m
+            };
+            sellPlan.Reasons.AddRange(reasons);
+            return sellPlan;
+        }
 
         if (proposedPositionValue > maxPositionValue)
         {
@@ -283,55 +324,102 @@ public sealed class PortfolioRiskService
         var dailyLossPercent = (dashboard.Summary.DailyPnL / totalPortfolioValue) * 100m;
         var reductionPlan = new TradeReductionPlan();
 
+        if (dashboard.Summary.DefensiveMode && decision?.Side != OrderSide.Sell)
+        {
+            warnings.Add("Portfolio is in defensive mode; opening positions are blocked.");
+        }
+
         if (exposurePercent >= _policy.MaxPortfolioExposurePct)
         {
             defensiveMode = true;
-            warnings.Add("Portfolio exposure exceeds the 95% cap.");
+            if (decision?.Side != OrderSide.Sell)
+            {
+                warnings.Add("Portfolio exposure exceeds the 95% cap.");
+            }
         }
 
         if (cashReservePercent < _policy.MinCashReservePct)
         {
             defensiveMode = true;
-            warnings.Add("Cash reserve has fallen below the 5% minimum.");
+            if (decision?.Side != OrderSide.Sell)
+            {
+                warnings.Add("Cash reserve has fallen below the 5% minimum.");
+            }
         }
 
         if (dailyLossPercent < -_policy.MaxDailyLossPct)
         {
             defensiveMode = true;
-            warnings.Add("Daily drawdown is beyond the 2% limit.");
+            if (decision?.Side != OrderSide.Sell)
+            {
+                warnings.Add("Daily drawdown is beyond the 2% limit.");
+            }
         }
 
         if (decision is not null)
         {
-            var tradeValue = Math.Abs(decision.Quantity * decision.EntryPrice);
+            var isSell = decision.Side == OrderSide.Sell;
+            var heldPosition = isSell
+                ? dashboard.Positions.FirstOrDefault(position =>
+                    string.Equals(position.Symbol, decision.Ticker, StringComparison.OrdinalIgnoreCase))
+                : null;
+            if (isSell && heldPosition is null)
+            {
+                warnings.Add("Sell order does not match a synchronized open position.");
+            }
+            else if (isSell && Math.Abs(decision.Quantity) > Math.Abs(heldPosition!.Quantity))
+            {
+                warnings.Add("Sell quantity exceeds the synchronized open position.");
+            }
+
+            var price = isSell
+                ? heldPosition?.CurrentPrice ?? 0m
+                : decision.EntryPrice;
+            if (price <= 0m)
+            {
+                warnings.Add("A positive current price is required to validate the trade.");
+            }
+
+            var tradeValue = Math.Abs(decision.Quantity * price);
             var proposedPositionPercent = (tradeValue / totalPortfolioValue) * 100m;
             var currentExposureValue = exposurePercent / 100m * totalPortfolioValue;
-            var projectedExposureValue = currentExposureValue + (decision.Side == OrderSide.Sell ? -tradeValue : tradeValue);
+            var projectedExposureValue = Math.Max(
+                0m,
+                currentExposureValue + (isSell ? -tradeValue : tradeValue));
             var projectedExposurePercent = (projectedExposureValue / totalPortfolioValue) * 100m;
-            var projectedCashValue = dashboard.Summary.AvailableCash - (decision.Side == OrderSide.Buy ? tradeValue : -tradeValue);
+            var projectedCashValue = dashboard.Summary.AvailableCash - (isSell ? -tradeValue : tradeValue);
             var projectedCashReservePercent = (projectedCashValue / totalPortfolioValue) * 100m;
 
-            if (proposedPositionPercent > _policy.MaxPositionPct)
+            if (!isSell && proposedPositionPercent > _policy.MaxPositionPct)
             {
                 warnings.Add("This trade would exceed the 5% max position size limit.");
             }
 
-            if (projectedExposurePercent > _policy.MaxPortfolioExposurePct)
+            if (!isSell && projectedExposurePercent > _policy.MaxPortfolioExposurePct)
             {
                 warnings.Add("This trade would exceed the 95% portfolio exposure cap.");
             }
 
-            if (projectedCashReservePercent < _policy.MinCashReservePct)
+            if (!isSell && projectedCashReservePercent < _policy.MinCashReservePct)
             {
                 warnings.Add("This trade would violate the 5% cash reserve minimum.");
             }
 
+            if (isSell && projectedExposurePercent >= exposurePercent)
+            {
+                warnings.Add("Sell order must reduce synchronized portfolio exposure.");
+            }
+
+            var sector = isSell ? heldPosition?.Sector : decision.Sector;
             var sectorExposureValue = dashboard.Positions
-                .Where(p => !string.IsNullOrWhiteSpace(decision.Sector) && string.Equals(p.Sector, decision.Sector, StringComparison.OrdinalIgnoreCase))
+                .Where(position => !string.IsNullOrWhiteSpace(sector)
+                    && string.Equals(position.Sector, sector, StringComparison.OrdinalIgnoreCase))
                 .Sum(p => p.Quantity * p.CurrentPrice);
 
-            var projectedSectorExposure = ((sectorExposureValue + (decision.Side == OrderSide.Buy ? tradeValue : -tradeValue)) / totalPortfolioValue) * 100m;
-            if (projectedSectorExposure > _policy.MaxSectorExposurePct)
+            var projectedSectorExposure = (Math.Max(
+                0m,
+                sectorExposureValue + (isSell ? -tradeValue : tradeValue)) / totalPortfolioValue) * 100m;
+            if (!isSell && projectedSectorExposure > _policy.MaxSectorExposurePct)
             {
                 warnings.Add("This trade would exceed the sector exposure cap.");
             }

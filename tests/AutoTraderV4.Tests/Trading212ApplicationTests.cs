@@ -70,7 +70,7 @@ public class Trading212ApplicationTests
     }
 
     [Fact]
-    public void Program_ConfigureServices_UsesInMemoryDatabase_WhenPostgresIsUnreachableAndDatabaseFlagIsUnset()
+    public void Program_ConfigureServices_Throws_WhenPostgresIsUnreachableAndDatabaseFlagIsUnset()
     {
         var builder = WebApplication.CreateBuilder();
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
@@ -83,13 +83,8 @@ public class Trading212ApplicationTests
             ["Database:InMemoryDatabaseName"] = "Program_ConfigureServices_UnreachablePostgres_Test"
         });
 
-        Program.ConfigureServices(builder);
-
-        using var provider = builder.Services.BuildServiceProvider();
-        using var scope = provider.CreateScope();
-        var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-
-        Assert.True(context.Database.IsInMemory());
+        var exception = Assert.Throws<InvalidOperationException>(() => Program.ConfigureServices(builder));
+        Assert.Contains("not reachable", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -112,7 +107,7 @@ public class Trading212ApplicationTests
     }
 
     [Fact]
-    public void Program_ConfigureServices_UsesInMemoryDatabase_WhenPostgresIsUnreachableAndUseInMemoryIsUnset()
+    public void Program_ConfigureServices_Throws_WhenPostgresIsUnreachableAndInMemoryIsDisabled()
     {
         var builder = WebApplication.CreateBuilder();
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
@@ -121,17 +116,12 @@ public class Trading212ApplicationTests
             ["Trading212:UseDemoData"] = "false",
             ["Trading212:ApiKey"] = "demo-key",
             ["Trading212:ApiSecret"] = "demo-secret",
-            ["Database:UseInMemory"] = null,
+            ["Database:UseInMemory"] = "false",
             ["Database:InMemoryDatabaseName"] = "Program_ConfigureServices_PostgresFallback_Test"
         });
 
-        Program.ConfigureServices(builder);
-
-        using var provider = builder.Services.BuildServiceProvider();
-        using var scope = provider.CreateScope();
-        var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-
-        Assert.True(context.Database.IsInMemory());
+        var exception = Assert.Throws<InvalidOperationException>(() => Program.ConfigureServices(builder));
+        Assert.Contains("not reachable", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -368,6 +358,95 @@ public class Trading212ApplicationTests
         Assert.True(assessment.ReductionPlan?.RequiresReduction == true);
         Assert.True(assessment.ReductionPlan!.ReducedTradeValue < assessment.ProposedPositionValue);
         Assert.Contains(assessment.Warnings, warning => warning.Contains("Reduce", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void PortfolioRiskService_BuildTradeReductionPlan_AllowsValidRiskReducingSell()
+    {
+        var service = new PortfolioRiskService();
+
+        var plan = service.BuildTradeReductionPlan(
+            portfolioValue: 100000m,
+            availableCash: 4000m,
+            proposedPositionValue: 2000m,
+            existingExposureValue: 96000m,
+            sectorExposureValue: 96000m,
+            dailyPortfolioLoss: -2500m,
+            portfolioDrawdownPct: 0m,
+            side: OrderSide.Sell);
+
+        Assert.False(plan.RequiresReduction);
+        Assert.Equal(2000m, plan.ReducedTradeValue);
+        Assert.Equal(94m, plan.ExposurePercentAfterReduction);
+        Assert.Equal(6m, plan.CashReservePercentAfterReduction);
+    }
+
+    [Fact]
+    public void PortfolioRiskService_Evaluate_AllowsRiskReducingSellDuringDefensiveMode()
+    {
+        var service = new PortfolioRiskService();
+        var dashboard = new PortfolioDashboard
+        {
+            Summary = new PortfolioSummary
+            {
+                TotalPortfolioValue = 100000m,
+                AvailableCash = 4000m,
+                TotalExposurePercent = 96m,
+                DailyPnL = -2500m,
+                DefensiveMode = true
+            },
+            Positions =
+            [
+                new PortfolioPositionView
+                {
+                    Symbol = "MSFT",
+                    Sector = "Technology",
+                    Quantity = 96m,
+                    CurrentPrice = 1000m
+                }
+            ]
+        };
+
+        var result = service.Evaluate(dashboard, new TradeDecision
+        {
+            Ticker = "MSFT",
+            Side = OrderSide.Sell,
+            Quantity = 2m,
+            OrderType = Trading212OrderType.Market
+        });
+
+        Assert.True(result.Allowed);
+        Assert.True(result.DefensiveMode);
+        Assert.Equal(94m, result.ReductionPlan!.ExposurePercentAfterReduction);
+    }
+
+    [Fact]
+    public void PortfolioRiskService_Evaluate_BlocksBuyDuringDefensiveMode()
+    {
+        var service = new PortfolioRiskService();
+        var dashboard = new PortfolioDashboard
+        {
+            Summary = new PortfolioSummary
+            {
+                TotalPortfolioValue = 100000m,
+                AvailableCash = 30000m,
+                TotalExposurePercent = 60m,
+                DefensiveMode = true
+            }
+        };
+
+        var result = service.Evaluate(dashboard, new TradeDecision
+        {
+            Ticker = "NVDA",
+            Side = OrderSide.Buy,
+            Quantity = 1m,
+            EntryPrice = 100m,
+            OrderType = Trading212OrderType.Market
+        });
+
+        Assert.False(result.Allowed);
+        Assert.True(result.DefensiveMode);
+        Assert.Contains(result.Warnings, warning => warning.Contains("defensive mode", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]

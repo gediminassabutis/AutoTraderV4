@@ -228,6 +228,45 @@ public sealed class Trading212AccountSummary
     }
 }
 
+public sealed class Trading212Position
+{
+    [JsonPropertyName("instrument")]
+    public Trading212Instrument Instrument { get; set; } = new();
+
+    [JsonPropertyName("quantity")]
+    [JsonConverter(typeof(Trading212DecimalConverter))]
+    public decimal Quantity { get; set; }
+
+    [JsonPropertyName("averagePricePaid")]
+    [JsonConverter(typeof(Trading212DecimalConverter))]
+    public decimal AveragePricePaid { get; set; }
+
+    [JsonPropertyName("currentPrice")]
+    [JsonConverter(typeof(Trading212DecimalConverter))]
+    public decimal CurrentPrice { get; set; }
+
+    [JsonPropertyName("walletImpact")]
+    public Trading212PositionWalletImpact? WalletImpact { get; set; }
+}
+
+public sealed class Trading212PositionWalletImpact
+{
+    [JsonPropertyName("currency")]
+    public string Currency { get; set; } = string.Empty;
+
+    [JsonPropertyName("currentValue")]
+    [JsonConverter(typeof(Trading212DecimalConverter))]
+    public decimal CurrentValue { get; set; }
+
+    [JsonPropertyName("totalCost")]
+    [JsonConverter(typeof(Trading212DecimalConverter))]
+    public decimal TotalCost { get; set; }
+
+    [JsonPropertyName("unrealizedProfitLoss")]
+    [JsonConverter(typeof(Trading212DecimalConverter))]
+    public decimal UnrealizedProfitLoss { get; set; }
+}
+
 public sealed class Trading212Instrument
 {
     [JsonPropertyName("currency")]

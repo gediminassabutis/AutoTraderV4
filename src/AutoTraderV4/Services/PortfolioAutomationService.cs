@@ -94,36 +94,48 @@ public sealed class PortfolioReviewService
 public sealed class BuyOpportunityService
 {
     private readonly IPortfolioRepository _repository;
-    private readonly StrategyEngineService _strategyEngineService;
+    private readonly IPortfolioDashboardService _dashboardService;
     private readonly RiskGovernanceService _riskGovernanceService;
+    private readonly PortfolioStateSyncService _portfolioStateSyncService;
+    private readonly MarketDataService _marketDataService;
+    private readonly ILogger<BuyOpportunityService> _logger;
 
     public BuyOpportunityService(
         IPortfolioRepository repository,
-        StrategyEngineService strategyEngineService,
-        RiskGovernanceService riskGovernanceService)
+        IPortfolioDashboardService dashboardService,
+        RiskGovernanceService riskGovernanceService,
+        PortfolioStateSyncService portfolioStateSyncService,
+        MarketDataService marketDataService,
+        ILogger<BuyOpportunityService> logger)
     {
         _repository = repository ?? throw new ArgumentNullException(nameof(repository));
-        _strategyEngineService = strategyEngineService ?? throw new ArgumentNullException(nameof(strategyEngineService));
+        _dashboardService = dashboardService ?? throw new ArgumentNullException(nameof(dashboardService));
         _riskGovernanceService = riskGovernanceService ?? throw new ArgumentNullException(nameof(riskGovernanceService));
+        _portfolioStateSyncService = portfolioStateSyncService ?? throw new ArgumentNullException(nameof(portfolioStateSyncService));
+        _marketDataService = marketDataService ?? throw new ArgumentNullException(nameof(marketDataService));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     public async Task<IReadOnlyList<BuyOpportunityDecision>> ScanForBuysAsync(CancellationToken cancellationToken = default)
     {
+        await _portfolioStateSyncService.EnsureFreshAsync(cancellationToken);
         var state = await _repository.GetPortfolioStateAsync(cancellationToken);
         var positions = await _repository.GetAllPositionsAsync(cancellationToken);
         var availableCash = state?.Cash ?? 0m;
 
-        if (availableCash <= 0m)
+        if (availableCash <= 0m || state is null || state.TotalValue <= 0m)
         {
             return [];
         }
 
+        var dashboard = await _dashboardService.GetDashboardAsync(cancellationToken);
         var buyBudget = Math.Min(availableCash, availableCash * 0.5m);
         var openTickers = new HashSet<string>(positions.Select(x => x.Ticker), StringComparer.OrdinalIgnoreCase);
         var decisions = new List<BuyOpportunityDecision>();
         var remainingBudget = buyBudget;
 
-        foreach (var opportunity in _strategyEngineService.BuildWatchlist()
+        foreach (var opportunity in dashboard.Watchlist
+                     .Where(opportunity => !opportunity.IsSynthetic)
                      .Where(x => !openTickers.Contains(x.Symbol))
                      .OrderByDescending(x => x.Confidence))
         {
@@ -132,8 +144,47 @@ public sealed class BuyOpportunityService
                 break;
             }
 
-            var price = opportunity.Price > 0m ? opportunity.Price : 100m;
-            var maxQuantity = Math.Floor(remainingBudget / price);
+            var ingestion = await _marketDataService.IngestAsync(opportunity.Symbol, cancellationToken);
+            if (!ingestion.Success || ingestion.Data is null)
+            {
+                _logger.LogWarning(
+                    "Skipping {Ticker}; no fresh market data is available. Provider failures: {Failures}",
+                    opportunity.Symbol,
+                    string.Join("; ", ingestion.Failures));
+                continue;
+            }
+
+            var marketData = ingestion.Data;
+            if (marketData.IsSynthetic)
+            {
+                _logger.LogWarning(
+                    "Skipping {Ticker}; the only available market data is synthetic from {Provider}.",
+                    opportunity.Symbol,
+                    marketData.ProviderName);
+                continue;
+            }
+
+            if (opportunity.IsSynthetic)
+            {
+                _logger.LogWarning(
+                    "Skipping {Ticker}; strategy scores are synthetic and cannot be used to approve an entry.",
+                    opportunity.Symbol);
+                continue;
+            }
+
+            if (marketData.Price <= 0m
+                || !marketData.LiquidityScore.HasValue
+                || !marketData.SpreadPercent.HasValue)
+            {
+                _logger.LogWarning(
+                    "Skipping {Ticker}; market data is missing a positive price, measured liquidity, or measured spread.",
+                    opportunity.Symbol);
+                continue;
+            }
+
+            var price = marketData.Price;
+            var maxPositionBudget = Math.Min(remainingBudget, state.TotalValue * 0.05m);
+            var maxQuantity = Math.Floor(maxPositionBudget / price);
             if (maxQuantity <= 0m)
             {
                 continue;
@@ -141,17 +192,21 @@ public sealed class BuyOpportunityService
 
             var quantity = maxQuantity;
             var estimatedCost = quantity * price;
+            var stopLoss = price * 0.94m;
+            var takeProfit = price * 1.18m;
+            var riskReward = (takeProfit - price) / (price - stopLoss);
             var trade = new TradeDecision
             {
                 Ticker = opportunity.Symbol,
                 Side = OrderSide.Buy,
                 Quantity = quantity,
                 EntryPrice = price,
-                StopLoss = price * 0.94m,
-                TakeProfit = price * 1.18m,
+                StopLoss = stopLoss,
+                TakeProfit = takeProfit,
                 ConfidenceScore = opportunity.Confidence,
                 Rating = opportunity.Rating,
-                RiskReward = opportunity.ForecastReturn > 0m ? Math.Round(opportunity.ForecastReturn / 9m, 2, MidpointRounding.AwayFromZero) : 2.5m,
+                FinalScore = opportunity.Confidence,
+                RiskReward = Math.Round(riskReward, 2, MidpointRounding.AwayFromZero),
                 TriggeringStrategy = "Portfolio automation",
                 EligibleForExecution = true
             };
@@ -160,9 +215,9 @@ public sealed class BuyOpportunityService
             {
                 Symbol = opportunity.Symbol,
                 Sector = opportunity.Sector,
-                LiquidityScore = 85m,
-                SpreadPercent = 0.25m,
-                ObservedAtUtc = DateTimeOffset.UtcNow
+                LiquidityScore = marketData.LiquidityScore.Value,
+                SpreadPercent = marketData.SpreadPercent.Value,
+                ObservedAtUtc = marketData.TimestampUtc
             };
 
             var riskAssessment = await _riskGovernanceService.EvaluateAsync(trade, riskContext, cancellationToken);
@@ -199,33 +254,51 @@ public sealed class PortfolioAutomationBackgroundService : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<PortfolioAutomationBackgroundService> _logger;
     private static readonly TimeSpan ReviewInterval = TimeSpan.FromMinutes(5);
+    private readonly TimeSpan _reviewInterval;
 
     public PortfolioAutomationBackgroundService(
         IServiceScopeFactory scopeFactory,
-        ILogger<PortfolioAutomationBackgroundService> logger)
+        ILogger<PortfolioAutomationBackgroundService> logger,
+        TimeSpan? reviewInterval = null)
     {
         _scopeFactory = scopeFactory ?? throw new ArgumentNullException(nameof(scopeFactory));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _reviewInterval = reviewInterval ?? ReviewInterval;
+        if (_reviewInterval <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(reviewInterval), "Review interval must be positive.");
+        }
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        try
+        using var timer = new PeriodicTimer(_reviewInterval);
+        while (!stoppingToken.IsCancellationRequested)
         {
-            await RunAutomationCycleAsync(stoppingToken);
-
-            using var timer = new PeriodicTimer(ReviewInterval);
-            while (await timer.WaitForNextTickAsync(stoppingToken))
+            try
             {
                 await RunAutomationCycleAsync(stoppingToken);
             }
-        }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-        {
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "The portfolio automation cycle failed.");
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "The portfolio automation cycle failed; the worker will retry after the next interval.");
+            }
+
+            try
+            {
+                if (!await timer.WaitForNextTickAsync(stoppingToken))
+                {
+                    return;
+                }
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
         }
     }
 

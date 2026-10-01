@@ -33,6 +33,8 @@ This starts:
 
 Keep the committed `src/AutoTraderV4/appsettings.json` safe by leaving the PostgreSQL connection string blank and supplying secrets through user secrets or environment variables.
 
+Any Trading 212 credentials previously committed to source control must be revoked and rotated before enabling live access; removing them from the current file does not erase repository history.
+
 Example:
 
 ```json
@@ -41,23 +43,29 @@ Example:
     "DefaultConnection": ""
   },
   "Database": {
-    "UseInMemory": true,
     "InMemoryDatabaseName": "AutoTraderV4_Test"
   },
   "Trading212": {
     "BaseUrl": "https://demo.trading212.com",
     "UseDemoData": true,
-    "ApiKey": "YOUR_API_KEY",
-    "ApiSecret": "YOUR_API_SECRET"
+    "ApiKey": "",
+    "ApiSecret": ""
   }
 }
 ```
 
-Set `ConnectionStrings__DefaultConnection` only when you want to use PostgreSQL. When the in-memory flag is unset, startup probes the configured PostgreSQL endpoint with a short timeout and falls back to the in-memory store if the database is unreachable.
+With no PostgreSQL connection string, the app uses EF Core's in-memory store. To use PostgreSQL, provide a connection string and explicitly disable the in-memory provider:
+
+```powershell
+$env:ConnectionStrings__DefaultConnection = 'Host=localhost;Port=5432;Database=autotrader_v4;Username=postgres;Password=...'
+$env:Database__UseInMemory = 'false'
+```
+
+On startup, the app creates the EF schema when the configured database is empty. If a connection string is configured but PostgreSQL is unavailable, startup fails instead of silently switching to non-persistent storage. Existing databases with a partial or older schema need an explicit migration before use.
 
 The app falls back to demo data automatically when `Trading212:UseDemoData` is `true` or when the API key/secret are left blank. This keeps the dashboard working on a clean machine without a live Trading 212 subscription.
 
-On startup, the app also begins a lightweight portfolio automation loop that reviews open positions for sell triggers and scans the watchlist for buy opportunities using the available cash balance. The cycle runs every five minutes by default.
+On startup, the app begins a five-minute review loop that computes sell triggers and scans buy candidates. It logs recommendations only; broker order submission is intentionally disabled until authenticated execution, verified market data, and complete risk telemetry are available.
 
 For test-only runs without a PostgreSQL instance, set the app to use EF Core's in-memory database:
 
@@ -84,7 +92,7 @@ npm install
 npm run build
 ```
 
-The dashboard lives in [ui/](./ui) and builds independently with Vite.
+The dashboard source and tests live in [ui/](./ui). The Vite production build writes directly to `src/AutoTraderV4/wwwroot`, the static directory served by the backend.
 
 For iterative UI work you can also run the Vite dev server:
 
@@ -123,10 +131,11 @@ The automated suite now includes:
 - `GET /api/audit-logs`
 - `GET /api/account/summary`
 - `GET /api/positions`
-- `POST /api/orders`
 - `POST /api/strategies/weighted-score`
 - `POST /api/risk/validate`
 - `GET /api/risk/policy`
+
+`POST /api/orders` currently returns `501 Not Implemented`; no public endpoint submits broker orders.
 
 ## Specialized agents
 
