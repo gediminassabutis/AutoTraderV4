@@ -70,9 +70,10 @@ public partial class Program
             {
                 var options = sp.GetRequiredService<Trading212Options>();
                 client.BaseAddress = new Uri(options.BaseUrl.TrimEnd('/') + "/api/v0/");
-            });
+            }).AddHttpMessageHandler(() => new Trading212RateLimitHandler());
         }
 
+        builder.Services.AddSingleton<PortfolioSyncCoordinator>();
         builder.Services.AddScoped<IPortfolioRepository, PortfolioRepository>();
         builder.Services.AddScoped<StrategyExecutionService>();
         builder.Services.AddSingleton<PortfolioRiskPolicy>();
@@ -291,9 +292,9 @@ public partial class Program
             return Results.Ok(await auditLoggingService.GetRecentAsync(symbol, take ?? 50, cancellationToken));
         });
 
-        app.MapGet("/api/account/summary", async (ITrading212Client client, CancellationToken cancellationToken) =>
+        app.MapGet("/api/account/summary", async (PortfolioStateSyncService syncService, CancellationToken cancellationToken) =>
         {
-            var summary = await client.GetAccountSummaryAsync(cancellationToken);
+            var summary = await syncService.GetAccountSummaryAsync(cancellationToken);
             return Results.Ok(summary);
         });
 

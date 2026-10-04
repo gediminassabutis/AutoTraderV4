@@ -8,20 +8,20 @@ public sealed class PortfolioStateSyncService
     private readonly ITrading212Client _trading212Client;
     private readonly TimeProvider _timeProvider;
     private readonly bool _useDemoData;
-    private readonly SemaphoreSlim _syncLock = new(1, 1);
-    private DateTimeOffset? _lastSuccessfulSyncUtc;
-    private Trading212AccountSummary? _lastAccountSummary;
+    private readonly PortfolioSyncCoordinator _syncCoordinator;
 
     public PortfolioStateSyncService(
         IPortfolioRepository repository,
         ITrading212Client trading212Client,
         TimeProvider timeProvider,
-        bool useDemoData)
+        bool useDemoData,
+        PortfolioSyncCoordinator? syncCoordinator = null)
     {
         _repository = repository ?? throw new ArgumentNullException(nameof(repository));
         _trading212Client = trading212Client ?? throw new ArgumentNullException(nameof(trading212Client));
         _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
         _useDemoData = useDemoData;
+        _syncCoordinator = syncCoordinator ?? new PortfolioSyncCoordinator();
     }
 
     public async Task EnsureFreshAsync(CancellationToken cancellationToken = default)
@@ -31,11 +31,11 @@ public sealed class PortfolioStateSyncService
             return;
         }
 
-        await _syncLock.WaitAsync(cancellationToken);
+        await _syncCoordinator.SyncLock.WaitAsync(cancellationToken);
         try
         {
             var now = _timeProvider.GetUtcNow();
-            if (_lastSuccessfulSyncUtc is { } lastSync
+            if (_syncCoordinator.LastSuccessfulSyncUtc is { } lastSync
                 && now - lastSync is var age
                 && age >= TimeSpan.Zero
                 && age <= MaximumSyncAge)
@@ -70,12 +70,12 @@ public sealed class PortfolioStateSyncService
             };
 
             await _repository.ReplaceBrokerSnapshotAsync(state, positions, cancellationToken);
-            _lastAccountSummary = account;
-            _lastSuccessfulSyncUtc = now;
+            _syncCoordinator.LastAccountSummary = account;
+            _syncCoordinator.LastSuccessfulSyncUtc = now;
         }
         finally
         {
-            _syncLock.Release();
+            _syncCoordinator.SyncLock.Release();
         }
     }
 
@@ -87,7 +87,7 @@ public sealed class PortfolioStateSyncService
         }
 
         await EnsureFreshAsync(cancellationToken);
-        return _lastAccountSummary
+        return _syncCoordinator.LastAccountSummary
             ?? throw new InvalidOperationException("Trading 212 account summary is unavailable after portfolio synchronization.");
     }
 
@@ -124,4 +124,11 @@ public sealed class PortfolioStateSyncService
             UpdatedAtUtc = updatedAtUtc
         };
     }
+}
+
+public sealed class PortfolioSyncCoordinator
+{
+    internal SemaphoreSlim SyncLock { get; } = new(1, 1);
+    internal DateTimeOffset? LastSuccessfulSyncUtc { get; set; }
+    internal Trading212AccountSummary? LastAccountSummary { get; set; }
 }
