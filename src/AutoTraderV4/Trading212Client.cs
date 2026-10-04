@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text.Json;
 
@@ -50,6 +51,101 @@ public sealed class DemoTrading212Client : ITrading212Client
             Ticker = order.Ticker,
             Status = "demo-accepted"
         });
+    }
+}
+
+public sealed class Trading212RateLimitHandler : DelegatingHandler
+{
+    private static readonly SemaphoreSlim RequestLock = new(1, 1);
+    private static readonly TimeSpan MinimumInterval = TimeSpan.FromMilliseconds(300);
+    private static readonly int MaximumRetries = 3;
+    private static long _lastRequestTimestamp;
+    private static bool _hasSentRequest;
+    private static DateTimeOffset _cooldownUntilUtc;
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            await WaitForRequestSlotAsync(cancellationToken).ConfigureAwait(false);
+            var response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            if (response.StatusCode != System.Net.HttpStatusCode.TooManyRequests
+                || request.Method != HttpMethod.Get
+                || attempt >= MaximumRetries)
+            {
+                return response;
+            }
+
+            var retryDelay = GetRetryDelay(response, attempt);
+            response.Dispose();
+            await SetCooldownAsync(retryDelay, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task WaitForRequestSlotAsync(CancellationToken cancellationToken)
+    {
+        await RequestLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            while (true)
+            {
+                var intervalDelay = _hasSentRequest
+                    ? MinimumInterval - Stopwatch.GetElapsedTime(_lastRequestTimestamp)
+                    : TimeSpan.Zero;
+                var cooldownDelay = _cooldownUntilUtc - DateTimeOffset.UtcNow;
+                var delay = intervalDelay > cooldownDelay ? intervalDelay : cooldownDelay;
+                if (delay <= TimeSpan.Zero)
+                {
+                    break;
+                }
+
+                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+            }
+
+            _lastRequestTimestamp = Stopwatch.GetTimestamp();
+            _hasSentRequest = true;
+        }
+        finally
+        {
+            RequestLock.Release();
+        }
+    }
+
+    private static async Task SetCooldownAsync(TimeSpan delay, CancellationToken cancellationToken)
+    {
+        await RequestLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var retryTime = DateTimeOffset.UtcNow + delay;
+            if (retryTime > _cooldownUntilUtc)
+            {
+                _cooldownUntilUtc = retryTime;
+            }
+        }
+        finally
+        {
+            RequestLock.Release();
+        }
+    }
+
+    private static TimeSpan GetRetryDelay(HttpResponseMessage response, int attempt)
+    {
+        var retryAfter = response.Headers.RetryAfter;
+        if (retryAfter?.Delta is { } delta && delta > TimeSpan.Zero)
+        {
+            return delta;
+        }
+
+        if (retryAfter?.Date is { } retryDate)
+        {
+            var dateDelay = retryDate - DateTimeOffset.UtcNow;
+            if (dateDelay > TimeSpan.Zero)
+            {
+                return dateDelay;
+            }
+        }
+
+        return TimeSpan.FromSeconds(Math.Pow(2, attempt));
     }
 }
 

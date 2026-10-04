@@ -274,15 +274,15 @@ button {
 
 .table-wrap {
   overflow-x: auto;
-  background: rgba(15, 23, 42, 0.72);
-  border: 1px solid rgba(148, 163, 184, 0.12);
+  background: #0b1424;
+  border: 1px solid rgba(148, 163, 184, 0.2);
   border-radius: 1rem;
 }
 
 .data-table {
   width: 100%;
   border-collapse: collapse;
-  background: rgba(15, 23, 42, 0.72);
+  background: #0b1424;
   color: #e2e8f0;
 }
 
@@ -290,24 +290,24 @@ button {
 .data-table td {
   text-align: left;
   padding: 0.85rem 0.65rem;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
   white-space: nowrap;
   font-size: 0.95rem;
   color: inherit;
 }
 
 .data-table th {
-  color: #94a3b8;
+  color: #cbd5e1;
   font-weight: 600;
-  background: rgba(15, 23, 42, 0.88);
+  background: #16243a;
 }
 
 .data-table tbody tr:nth-child(even) {
-  background: rgba(15, 23, 42, 0.42);
+  background: #101e32;
 }
 
 .data-table tbody tr:hover {
-  background: rgba(30, 41, 59, 0.8);
+  background: #1a2b45;
 }
 
 .primary-cell {

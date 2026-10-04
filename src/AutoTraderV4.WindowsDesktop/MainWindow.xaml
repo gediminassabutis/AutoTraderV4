@@ -22,6 +22,48 @@
             <Setter Property="Foreground" Value="#f8fafc"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
         </Style>
+        <Style TargetType="DataGrid">
+            <Setter Property="Background" Value="#0b1424"/>
+            <Setter Property="Foreground" Value="#e2e8f0"/>
+            <Setter Property="BorderBrush" Value="#334155"/>
+            <Setter Property="GridLinesVisibility" Value="Horizontal"/>
+            <Setter Property="HorizontalGridLinesBrush" Value="#26364d"/>
+            <Setter Property="RowBackground" Value="#0b1424"/>
+            <Setter Property="AlternatingRowBackground" Value="#101e32"/>
+            <Setter Property="AlternationCount" Value="2"/>
+        </Style>
+        <Style TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="#16243a"/>
+            <Setter Property="Foreground" Value="#cbd5e1"/>
+            <Setter Property="BorderBrush" Value="#334155"/>
+            <Setter Property="Padding" Value="10,8"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+        <Style TargetType="DataGridRow">
+            <Setter Property="Foreground" Value="#e2e8f0"/>
+            <Setter Property="BorderBrush" Value="#26364d"/>
+            <Setter Property="BorderThickness" Value="0,0,0,1"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#1a2b45"/>
+                </Trigger>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="#1d4ed8"/>
+                    <Setter Property="Foreground" Value="White"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style TargetType="DataGridCell">
+            <Setter Property="Foreground" Value="#e2e8f0"/>
+            <Setter Property="BorderBrush" Value="#26364d"/>
+            <Setter Property="Padding" Value="8,6"/>
+            <Style.Triggers>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="#1d4ed8"/>
+                    <Setter Property="Foreground" Value="White"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
     </Window.Resources>
 
     <Grid Margin="18">
@@ -65,23 +107,23 @@
 
                 <StackPanel Grid.Column="0">
                     <TextBlock Style="{StaticResource MutedText}" Text="Portfolio value"/>
-                    <TextBlock x:Name="PortfolioValueText" Text="$0.00" FontSize="26" FontWeight="Bold" Foreground="#f8fafc" Margin="0,6,0,0"/>
+                    <TextBlock x:Name="PortfolioValueText" Text="£0.00" FontSize="26" FontWeight="Bold" Foreground="#f8fafc" Margin="0,6,0,0"/>
                 </StackPanel>
                 <StackPanel Grid.Column="1">
                     <TextBlock Style="{StaticResource MutedText}" Text="Available cash"/>
-                    <TextBlock x:Name="CashText" Text="$0.00" FontSize="26" FontWeight="Bold" Foreground="#f8fafc" Margin="0,6,0,0"/>
+                    <TextBlock x:Name="CashText" Text="£0.00" FontSize="26" FontWeight="Bold" Foreground="#f8fafc" Margin="0,6,0,0"/>
                 </StackPanel>
                 <StackPanel Grid.Column="2">
                     <TextBlock Style="{StaticResource MutedText}" Text="Daily P&amp;L"/>
-                    <TextBlock x:Name="DailyPnLText" Text="$0.00" FontSize="26" FontWeight="Bold" Foreground="#34d399" Margin="0,6,0,0"/>
+                    <TextBlock x:Name="DailyPnLText" Text="£0.00" FontSize="26" FontWeight="Bold" Foreground="#34d399" Margin="0,6,0,0"/>
                 </StackPanel>
                 <StackPanel Grid.Column="3">
                     <TextBlock Style="{StaticResource MutedText}" Text="Weekly P&amp;L"/>
-                    <TextBlock x:Name="WeeklyPnLText" Text="$0.00" FontSize="26" FontWeight="Bold" Foreground="#34d399" Margin="0,6,0,0"/>
+                    <TextBlock x:Name="WeeklyPnLText" Text="£0.00" FontSize="26" FontWeight="Bold" Foreground="#34d399" Margin="0,6,0,0"/>
                 </StackPanel>
                 <StackPanel Grid.Column="4">
                     <TextBlock Style="{StaticResource MutedText}" Text="Monthly P&amp;L"/>
-                    <TextBlock x:Name="MonthlyPnLText" Text="$0.00" FontSize="26" FontWeight="Bold" Foreground="#34d399" Margin="0,6,0,0"/>
+                    <TextBlock x:Name="MonthlyPnLText" Text="£0.00" FontSize="26" FontWeight="Bold" Foreground="#34d399" Margin="0,6,0,0"/>
                 </StackPanel>
                 <StackPanel Grid.Column="5">
                     <TextBlock Style="{StaticResource MutedText}" Text="Exposure"/>
@@ -123,15 +165,15 @@
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
                     <TextBlock Style="{StaticResource HeaderText}" Text="Open positions" FontSize="18"/>
-                    <DataGrid x:Name="PositionsGrid" Grid.Row="1" Margin="0,12,0,0" AutoGenerateColumns="False" Background="#0f172a" Foreground="#e2e8f0" AlternatingRowBackground="#111827" GridLinesVisibility="Horizontal" HeadersVisibility="Column" CanUserAddRows="False" IsReadOnly="True">
+                    <DataGrid x:Name="PositionsGrid" Grid.Row="1" Margin="0,12,0,0" AutoGenerateColumns="False" Background="#0f172a" Foreground="#2E2E2E" AlternatingRowBackground="#0A2157" GridLinesVisibility="Horizontal" HeadersVisibility="Column" CanUserAddRows="False" IsReadOnly="True">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Symbol" Binding="{Binding Symbol}" Width="0.9*"/>
                             <DataGridTextColumn Header="Qty" Binding="{Binding Quantity}" Width="0.7*"/>
-                            <DataGridTextColumn Header="Entry" Binding="{Binding EntryPrice, StringFormat=C}" Width="0.9*"/>
-                            <DataGridTextColumn Header="Current" Binding="{Binding CurrentPrice, StringFormat=C}" Width="0.9*"/>
-                            <DataGridTextColumn Header="P&amp;L" Binding="{Binding UnrealizedPnl, StringFormat=C}" Width="0.9*"/>
-                            <DataGridTextColumn Header="Stop" Binding="{Binding StopLoss, StringFormat=C}" Width="0.8*"/>
-                            <DataGridTextColumn Header="Take" Binding="{Binding TakeProfit, StringFormat=C}" Width="0.8*"/>
+                            <DataGridTextColumn Header="Entry" Binding="{Binding EntryPrice, StringFormat={}{0:C}, ConverterCulture=en-GB}" Width="0.9*"/>
+                            <DataGridTextColumn Header="Current" Binding="{Binding CurrentPrice, StringFormat={}{0:C}, ConverterCulture=en-GB}" Width="0.9*"/>
+                            <DataGridTextColumn Header="P&amp;L" Binding="{Binding UnrealizedPnl, StringFormat={}{0:C}, ConverterCulture=en-GB}" Width="0.9*"/>
+                            <DataGridTextColumn Header="Stop" Binding="{Binding StopLoss, StringFormat={}{0:C}, ConverterCulture=en-GB}" Width="0.8*"/>
+                            <DataGridTextColumn Header="Take" Binding="{Binding TakeProfit, StringFormat={}{0:C}, ConverterCulture=en-GB}" Width="0.8*"/>
                             <DataGridTextColumn Header="Confidence" Binding="{Binding Confidence}" Width="0.9*"/>
                         </DataGrid.Columns>
                     </DataGrid>
@@ -145,7 +187,7 @@
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
                     <TextBlock Style="{StaticResource HeaderText}" Text="Watchlist" FontSize="18"/>
-                    <DataGrid x:Name="WatchlistGrid" Grid.Row="1" Margin="0,12,0,0" AutoGenerateColumns="False" Background="#0f172a" Foreground="#e2e8f0" AlternatingRowBackground="#111827" GridLinesVisibility="Horizontal" HeadersVisibility="Column" CanUserAddRows="False" IsReadOnly="True">
+                    <DataGrid x:Name="WatchlistGrid" Grid.Row="1" Margin="0,12,0,0" AutoGenerateColumns="False" Background="#0f172a" Foreground="#2E2E2E" AlternatingRowBackground="#0A2157" GridLinesVisibility="Horizontal" HeadersVisibility="Column" CanUserAddRows="False" IsReadOnly="True">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Symbol" Binding="{Binding Symbol}" Width="0.8*"/>
                             <DataGridTextColumn Header="Rating" Binding="{Binding Rating}" Width="1.1*"/>
