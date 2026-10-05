@@ -114,6 +114,30 @@ public sealed class PortfolioDashboardClient
         }
     }
 
+    public async Task<StockTrackingCycleResult> RunStockTrackingCycleAsync(CancellationToken cancellationToken = default)
+    {
+        Log("Requesting a stock tracking cycle from the backend.");
+        using var response = await _httpClient.PostAsync("/api/stock-tracking/run-cycle", content: null, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            var detail = await response.Content.ReadAsStringAsync(cancellationToken);
+            var message = string.IsNullOrWhiteSpace(detail)
+                ? $"Backend responded with {(int)response.StatusCode} ({response.StatusCode})."
+                : $"Backend responded with {(int)response.StatusCode} ({response.StatusCode}): {detail.Trim()}";
+            Log($"Stock tracking request failed: {message}");
+            throw new HttpRequestException(message, null, response.StatusCode);
+        }
+
+        var result = await response.Content.ReadFromJsonAsync<StockTrackingCycleResult>(SerializerOptions, cancellationToken);
+        if (result is null)
+        {
+            throw new InvalidOperationException("The backend returned an empty stock tracking result.");
+        }
+
+        Log($"Stock tracking cycle completed with {result.UpdatedTickers.Count} updated tickers.");
+        return result;
+    }
+
     public static PortfolioDashboard CreateFallbackDashboard()
     {
         Log("Creating fallback dashboard data.");

@@ -11,6 +11,7 @@ public sealed class DashboardViewModel : INotifyPropertyChanged
     private readonly PortfolioDashboardClient _dashboardClient;
     private PortfolioDashboard _dashboard = PortfolioDashboardClient.CreateFallbackDashboard();
     private bool _isLoading;
+    private bool _isRunningStockTracking;
     private string _statusMessage = "Connecting to the AutoTrader backend...";
 
     public DashboardViewModel(PortfolioDashboardClient dashboardClient)
@@ -79,6 +80,21 @@ public sealed class DashboardViewModel : INotifyPropertyChanged
         }
     }
 
+    public bool IsRunningStockTracking
+    {
+        get => _isRunningStockTracking;
+        private set
+        {
+            if (_isRunningStockTracking == value)
+            {
+                return;
+            }
+
+            _isRunningStockTracking = value;
+            OnPropertyChanged();
+        }
+    }
+
     public async Task LoadAsync(CancellationToken cancellationToken = default)
     {
         IsLoading = true;
@@ -100,6 +116,37 @@ public sealed class DashboardViewModel : INotifyPropertyChanged
         finally
         {
             IsLoading = false;
+        }
+    }
+
+    public async Task RunStockTrackingCycleAsync(CancellationToken cancellationToken = default)
+    {
+        IsRunningStockTracking = true;
+        StatusMessage = "Running StockTrackingService cycle...";
+
+        try
+        {
+            var result = await _dashboardClient.RunStockTrackingCycleAsync(cancellationToken);
+            await LoadAsync(cancellationToken);
+
+            var status = $"Stock tracking completed: {result.UpdatedTickers.Count} prices updated, "
+                + $"{result.SellRecommendations.Count} sell recommendations, "
+                + $"{result.BuyOpportunities.Count} buy opportunities.";
+            if (!result.MarketDataReadiness.LiveProviderConfigured
+                && !string.IsNullOrWhiteSpace(result.MarketDataReadiness.Message))
+            {
+                status += $" {result.MarketDataReadiness.Message}";
+            }
+
+            StatusMessage = status;
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Stock tracking failed: {ex.Message}";
+        }
+        finally
+        {
+            IsRunningStockTracking = false;
         }
     }
 

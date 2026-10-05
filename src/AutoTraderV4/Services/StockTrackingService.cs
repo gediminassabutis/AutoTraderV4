@@ -10,6 +10,32 @@ public sealed class StockTrackingCycleResult
     public IReadOnlyList<BuyOpportunityDecision> BuyOpportunities { get; init; } = [];
 }
 
+public sealed class StockTrackingCycleGate : IDisposable
+{
+    private readonly SemaphoreSlim _semaphore = new(1, 1);
+
+    public async Task<StockTrackingCycleResult> RunAsync(
+        Func<CancellationToken, Task<StockTrackingCycleResult>> runCycleAsync,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(runCycleAsync);
+        await _semaphore.WaitAsync(cancellationToken);
+        try
+        {
+            return await runCycleAsync(cancellationToken);
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
+    }
+
+    public void Dispose()
+    {
+        _semaphore.Dispose();
+    }
+}
+
 public sealed class StockTrackingService
 {
     private readonly IPortfolioRepository _repository;
@@ -18,6 +44,7 @@ public sealed class StockTrackingService
     private readonly PortfolioReviewService _portfolioReviewService;
     private readonly BuyOpportunityService _buyOpportunityService;
     private readonly ILogger<StockTrackingService> _logger;
+    private readonly StockTrackingCycleGate _cycleGate;
 
     public StockTrackingService(
         IPortfolioRepository repository,
@@ -25,7 +52,8 @@ public sealed class StockTrackingService
         MarketDataService marketDataService,
         PortfolioReviewService portfolioReviewService,
         BuyOpportunityService buyOpportunityService,
-        ILogger<StockTrackingService> logger)
+        ILogger<StockTrackingService> logger,
+        StockTrackingCycleGate cycleGate)
     {
         _repository = repository ?? throw new ArgumentNullException(nameof(repository));
         _portfolioStateSyncService = portfolioStateSyncService ?? throw new ArgumentNullException(nameof(portfolioStateSyncService));
@@ -33,9 +61,15 @@ public sealed class StockTrackingService
         _portfolioReviewService = portfolioReviewService ?? throw new ArgumentNullException(nameof(portfolioReviewService));
         _buyOpportunityService = buyOpportunityService ?? throw new ArgumentNullException(nameof(buyOpportunityService));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _cycleGate = cycleGate ?? throw new ArgumentNullException(nameof(cycleGate));
     }
 
-    public async Task<StockTrackingCycleResult> RunCycleAsync(CancellationToken cancellationToken = default)
+    public Task<StockTrackingCycleResult> RunCycleAsync(CancellationToken cancellationToken = default)
+    {
+        return _cycleGate.RunAsync(RunCycleCoreAsync, cancellationToken);
+    }
+
+    private async Task<StockTrackingCycleResult> RunCycleCoreAsync(CancellationToken cancellationToken)
     {
         await _portfolioStateSyncService.EnsureFreshAsync(cancellationToken);
         var marketDataReadiness = _marketDataService.GetReadiness();

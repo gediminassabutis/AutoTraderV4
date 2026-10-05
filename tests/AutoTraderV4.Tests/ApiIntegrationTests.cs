@@ -180,6 +180,23 @@ public class ApiIntegrationTests
     }
 
     [Fact]
+    public async Task StockTrackingRunCycleEndpoint_ReturnsCycleResult()
+    {
+        await using var app = await TestWebApplication.CreateAsync();
+
+        using var response = await app.Client.PostAsync("/api/stock-tracking/run-cycle", content: null);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var readiness = payload.GetProperty("marketDataReadiness");
+        Assert.False(readiness.GetProperty("liveProviderConfigured").GetBoolean());
+        Assert.Equal("non-actionable", readiness.GetProperty("mode").GetString());
+        Assert.Equal(0, payload.GetProperty("updatedTickers").GetArrayLength());
+        Assert.Equal(0, payload.GetProperty("sellRecommendations").GetArrayLength());
+        Assert.Equal(0, payload.GetProperty("buyOpportunities").GetArrayLength());
+    }
+
+    [Fact]
     public async Task DashboardEndpoint_ReturnsSummaryWatchlistAndCharts()
     {
         await using var app = await TestWebApplication.CreateAsync(context =>

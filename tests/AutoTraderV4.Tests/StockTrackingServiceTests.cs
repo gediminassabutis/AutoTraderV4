@@ -116,7 +116,8 @@ public sealed class StockTrackingServiceTests
             marketData,
             new PortfolioReviewService(repository),
             buyService,
-            NullLogger<StockTrackingService>.Instance);
+            NullLogger<StockTrackingService>.Instance,
+            new StockTrackingCycleGate());
 
         var result = await service.RunCycleAsync();
 
@@ -202,7 +203,8 @@ public sealed class StockTrackingServiceTests
             marketData,
             new PortfolioReviewService(repository),
             buyService,
-            NullLogger<StockTrackingService>.Instance);
+            NullLogger<StockTrackingService>.Instance,
+            new StockTrackingCycleGate());
 
         var result = await service.RunCycleAsync();
 
@@ -269,7 +271,8 @@ public sealed class StockTrackingServiceTests
             marketData,
             new PortfolioReviewService(repository),
             buyService,
-            NullLogger<StockTrackingService>.Instance);
+            NullLogger<StockTrackingService>.Instance,
+            new StockTrackingCycleGate());
 
         var result = await service.RunCycleAsync();
 
