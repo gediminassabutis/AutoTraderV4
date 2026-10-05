@@ -196,6 +196,7 @@ public sealed class StockTrackingServiceTests
             marketData,
             NullLogger<BuyOpportunityService>.Instance);
         var service = new StockTrackingService(
+            context,
             repository,
             tradingClient,
             portfolioSync,
@@ -216,11 +217,142 @@ public sealed class StockTrackingServiceTests
         Assert.Equal(
             new[] { "NVDA_US_EQ", "TSLA_US_EQ", "AMD_US_EQ", "ZZZZ_US_EQ", "AAPL_US_EQ", "AAPL_GB_EQ" },
             result.NewStocks.Select(stock => stock.Ticker));
+        Assert.Equal(9, result.TrackedStockCount);
+        Assert.Equal(8, result.NewlyTrackedStockCount);
+        Assert.Equal(9, result.StockTicksCollected);
+        Assert.Equal(0, result.DeferredStockTickCount);
         Assert.Null(result.NewStockDiscoveryError);
-        Assert.Equal(4, await context.MarketSnapshots.CountAsync());
-        Assert.Equal(100m, (await context.MarketSnapshots.SingleAsync(snapshot => snapshot.Ticker == "NVDA")).Price);
-        Assert.Equal(500m, (await context.MarketSnapshots.SingleAsync(snapshot => snapshot.Ticker == "AMD")).Price);
+        Assert.Equal(
+            new[] { "AAPL_GB_EQ", "AAPL_US_EQ", "AMD_US_EQ", "KO", "KO_US_EQ", "MSFT_US_EQ", "NVDA_US_EQ", "TSLA_US_EQ", "ZZZZ_US_EQ" },
+            await context.TrackedStocks
+                .OrderBy(stock => stock.Ticker)
+                .Select(stock => stock.Ticker)
+                .ToArrayAsync());
+        var trackedStockTicks = await context.MarketSnapshots
+            .Select(snapshot => snapshot.Ticker)
+            .Distinct()
+            .ToArrayAsync();
+        Assert.Contains("KO_US_EQ", trackedStockTicks);
+        Assert.Contains("MSFT_US_EQ", trackedStockTicks);
+        Assert.Contains("NVDA_US_EQ", trackedStockTicks);
+        Assert.Contains("AAPL_GB_EQ", trackedStockTicks);
+        Assert.Equal(100m, await context.MarketSnapshots
+            .Where(snapshot => snapshot.Ticker == "NVDA")
+            .OrderByDescending(snapshot => snapshot.LastUpdatedUtc)
+            .Select(snapshot => snapshot.Price)
+            .FirstAsync());
+        Assert.Equal(500m, await context.MarketSnapshots
+            .Where(snapshot => snapshot.Ticker == "AMD")
+            .OrderByDescending(snapshot => snapshot.LastUpdatedUtc)
+            .Select(snapshot => snapshot.Price)
+            .FirstAsync());
         Assert.Equal(2, await context.OrderExecutionRecords.CountAsync());
+
+        var repeatedResult = await service.RunCycleAsync();
+        Assert.Equal(9, repeatedResult.TrackedStockCount);
+        Assert.Equal(0, repeatedResult.NewlyTrackedStockCount);
+        Assert.Equal(9, repeatedResult.StockTicksCollected);
+        Assert.Equal(0, repeatedResult.DeferredStockTickCount);
+    }
+
+    [Fact]
+    public async Task RunCycleAsync_ResumesBoundedTickCollectionAcrossCycles()
+    {
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+        await using var context = new ApplicationDbContext(options);
+        var now = DateTimeOffset.UtcNow;
+        var instruments = Enumerable.Range(0, 125)
+            .Select(index => new Trading212TradableInstrument
+            {
+                Ticker = $"TEST{index:000}_US_EQ",
+                Name = $"Test Stock {index:000}",
+                CurrencyCode = "USD",
+                Type = "STOCK",
+                AddedOn = now.AddMinutes(-index)
+            })
+            .Append(new Trading212TradableInstrument
+            {
+                Ticker = "TEST_ETF_US_EQ",
+                Name = "Test ETF",
+                Type = "ETF",
+                AddedOn = now
+            })
+            .ToArray();
+        var repository = new PortfolioRepository(context);
+        var portfolioSync = new PortfolioStateSyncService(
+            repository,
+            new DemoTrading212Client(),
+            TimeProvider.System,
+            useDemoData: true);
+        var marketProvider = new StaticMarketDataProvider(symbol =>
+        {
+            if (symbol == "TEST000_US_EQ")
+            {
+                throw new HttpRequestException("Simulated provider failure.");
+            }
+
+            return new MarketDataContract
+            {
+                Symbol = symbol,
+                Ticker = symbol,
+                Price = 100m,
+                IsSynthetic = false,
+                TimestampUtc = DateTimeOffset.UtcNow,
+                Source = "test-provider",
+                ProviderName = "verified-test-provider"
+            };
+        });
+        var marketData = new MarketDataService(context, [marketProvider], TimeProvider.System);
+        var buyService = new BuyOpportunityService(
+            context,
+            repository,
+            new RiskGovernanceService(repository, TimeProvider.System, portfolioSync, useDemoData: true),
+            portfolioSync,
+            marketData,
+            NullLogger<BuyOpportunityService>.Instance);
+        var service = new StockTrackingService(
+            context,
+            repository,
+            new StaticTrading212Client(instruments),
+            portfolioSync,
+            marketData,
+            new PortfolioReviewService(repository),
+            buyService,
+            NullLogger<StockTrackingService>.Instance,
+            new StockTrackingCycleGate());
+
+        var firstCycle = await service.RunCycleAsync();
+
+        Assert.Equal(125, firstCycle.TrackedStockCount);
+        Assert.Equal(125, firstCycle.NewlyTrackedStockCount);
+        Assert.Equal(20, firstCycle.NewStocks.Count);
+        Assert.Equal(99, firstCycle.StockTicksCollected);
+        Assert.Equal(25, firstCycle.DeferredStockTickCount);
+        Assert.False(firstCycle.StockTickCollectionBudgetExhausted);
+        Assert.Equal(100, marketProvider.Calls);
+        Assert.Equal(125, await context.TrackedStocks.CountAsync());
+        Assert.Equal(99, await context.MarketSnapshots.CountAsync());
+
+        var secondCycle = await service.RunCycleAsync();
+
+        Assert.Equal(125, secondCycle.TrackedStockCount);
+        Assert.Equal(0, secondCycle.NewlyTrackedStockCount);
+        Assert.Equal(99, secondCycle.StockTicksCollected);
+        Assert.Equal(25, secondCycle.DeferredStockTickCount);
+        Assert.Equal(200, marketProvider.Calls);
+        Assert.Equal(198, await context.MarketSnapshots.CountAsync());
+        Assert.Equal(124, await context.MarketSnapshots
+            .Select(snapshot => snapshot.Ticker)
+            .Distinct()
+            .CountAsync());
+        Assert.Equal(125, await context.TrackedStocks
+            .CountAsync(stock => stock.LastMarketDataAttemptAtUtc.HasValue));
+        Assert.NotNull(await context.TrackedStocks
+            .Where(stock => stock.Ticker == "TEST000_US_EQ")
+            .Select(stock => stock.LastMarketDataAttemptAtUtc)
+            .SingleAsync());
     }
 
     [Fact]
@@ -288,6 +420,7 @@ public sealed class StockTrackingServiceTests
             marketData,
             NullLogger<BuyOpportunityService>.Instance);
         var service = new StockTrackingService(
+            context,
             repository,
             new DemoTrading212Client(),
             portfolioSync,
@@ -357,6 +490,7 @@ public sealed class StockTrackingServiceTests
             marketData,
             NullLogger<BuyOpportunityService>.Instance);
         var service = new StockTrackingService(
+            context,
             repository,
             new StaticTrading212Client(
             [
@@ -382,6 +516,11 @@ public sealed class StockTrackingServiceTests
         Assert.Empty(result.UpdatedTickers);
         Assert.Empty(result.BuyOpportunities);
         Assert.Equal("ABC_US_EQ", Assert.Single(result.NewStocks).Ticker);
+        Assert.Equal(2, result.TrackedStockCount);
+        Assert.Equal(1, result.NewlyTrackedStockCount);
+        Assert.Equal(0, result.StockTicksCollected);
+        Assert.Equal(2, await context.TrackedStocks.CountAsync());
+        Assert.Equal(2, result.DeferredStockTickCount);
         Assert.Equal(0, provider.Calls);
         Assert.Equal(105m, (await context.Positions.SingleAsync()).CurrentPrice);
         Assert.Empty(await context.MarketSnapshots.ToListAsync());
@@ -480,6 +619,7 @@ public sealed class StockTrackingServiceTests
         bool supportsLiveData = true) : IMarketDataProvider
     {
         public bool SupportsLiveData => supportsLiveData;
+        public TimeSpan MinimumRequestInterval => TimeSpan.Zero;
         public int Calls { get; private set; }
 
         public Task<MarketDataContract?> GetAsync(string symbol, CancellationToken cancellationToken = default)

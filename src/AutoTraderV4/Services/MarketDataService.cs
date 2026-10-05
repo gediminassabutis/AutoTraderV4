@@ -150,9 +150,19 @@ public sealed class MarketDataReadiness
     public IReadOnlyList<string> LiveProviders { get; init; } = [];
 }
 
+public sealed record MarketDataBatchItem(string Symbol, MarketDataIngestionResult Ingestion);
+
+public sealed class MarketDataBatchIngestionResult
+{
+    public IReadOnlyList<MarketDataBatchItem> Items { get; init; } = [];
+    public int DeferredSymbolCount { get; init; }
+    public bool TimeBudgetExhausted { get; init; }
+}
+
 public interface IMarketDataProvider
 {
     bool SupportsLiveData => false;
+    TimeSpan MinimumRequestInterval => TimeSpan.FromMilliseconds(300);
 
     Task<MarketDataContract?> GetAsync(string symbol, CancellationToken cancellationToken = default);
 }
@@ -241,6 +251,8 @@ public sealed class MarketDataService
     private readonly ApplicationDbContext _context;
     private readonly IReadOnlyList<IMarketDataProvider> _providers;
     private readonly TimeProvider _timeProvider;
+    private readonly Dictionary<IMarketDataProvider, DateTimeOffset> _lastProviderRequestAtUtc =
+        new(ReferenceEqualityComparer.Instance);
 
     public MarketDataService(
         ApplicationDbContext context,
@@ -279,6 +291,92 @@ public sealed class MarketDataService
 
     public async Task<MarketDataIngestionResult> IngestAsync(string symbol, CancellationToken cancellationToken = default)
     {
+        var result = await IngestCoreAsync(symbol, cancellationToken);
+        await PersistSnapshotsAsync([result], cancellationToken);
+        return result;
+    }
+
+    public async Task<MarketDataBatchIngestionResult> IngestBatchAsync(
+        IReadOnlyCollection<string> symbols,
+        int maximumSymbols,
+        TimeSpan maximumDuration,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(symbols);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumSymbols);
+        if (maximumDuration <= TimeSpan.Zero || maximumDuration > TimeSpan.FromDays(49))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(maximumDuration),
+                "The collection time budget must be positive and no longer than 49 days.");
+        }
+
+        var normalizedSymbols = symbols
+            .Select(symbol =>
+            {
+                if (string.IsNullOrWhiteSpace(symbol))
+                {
+                    throw new ArgumentException("Every symbol is required.", nameof(symbols));
+                }
+
+                return symbol.Trim();
+            })
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (normalizedSymbols.Length == 0)
+        {
+            return new MarketDataBatchIngestionResult();
+        }
+
+        var items = new List<MarketDataBatchItem>(Math.Min(normalizedSymbols.Length, maximumSymbols));
+        var timeBudgetExhausted = false;
+        using var collectionBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        collectionBudget.CancelAfter(maximumDuration);
+
+        foreach (var symbol in normalizedSymbols.Take(maximumSymbols))
+        {
+            if (collectionBudget.IsCancellationRequested)
+            {
+                timeBudgetExhausted = true;
+                break;
+            }
+
+            try
+            {
+                var ingestion = await IngestCoreAsync(symbol, collectionBudget.Token);
+                items.Add(new MarketDataBatchItem(symbol, ingestion));
+            }
+            catch (OperationCanceledException) when (
+                !cancellationToken.IsCancellationRequested
+                    && collectionBudget.IsCancellationRequested)
+            {
+                items.Add(new MarketDataBatchItem(symbol, new MarketDataIngestionResult
+                {
+                    FreshnessStatus = DataFreshnessStatus.Missing,
+                    ActiveProvider = "none",
+                    Failures = ["The stock-tick collection time budget expired while waiting for market data."]
+                }));
+                timeBudgetExhausted = true;
+                break;
+            }
+        }
+
+        await PersistSnapshotsAsync(items.Select(item => item.Ingestion), cancellationToken);
+
+        var deferredSymbolCount = normalizedSymbols.Length - items.Count;
+        return new MarketDataBatchIngestionResult
+        {
+            Items = items,
+            DeferredSymbolCount = deferredSymbolCount,
+            TimeBudgetExhausted = timeBudgetExhausted
+                || (collectionBudget.IsCancellationRequested && deferredSymbolCount > 0)
+        };
+    }
+
+    private async Task<MarketDataIngestionResult> IngestCoreAsync(
+        string symbol,
+        CancellationToken cancellationToken)
+    {
         if (string.IsNullOrWhiteSpace(symbol))
         {
             throw new ArgumentException("Symbol is required.", nameof(symbol));
@@ -293,7 +391,7 @@ public sealed class MarketDataService
         {
             try
             {
-                var candidate = await provider.GetAsync(normalizedSymbol, cancellationToken);
+                var candidate = await GetFromProviderAsync(provider, normalizedSymbol, cancellationToken);
                 if (candidate is null)
                 {
                     providerFailures.Add($"{provider.GetType().Name}: provider returned no data");
@@ -314,9 +412,6 @@ public sealed class MarketDataService
                     }
 
                     var snapshot = candidate.ToSnapshot(reference);
-                    _context.MarketSnapshots.Add(snapshot);
-                    await _context.SaveChangesAsync(cancellationToken);
-
                     return new MarketDataIngestionResult
                     {
                         Success = true,
@@ -345,9 +440,6 @@ public sealed class MarketDataService
         {
             var reference = _timeProvider.GetUtcNow();
             var syntheticSnapshot = bestFreshSyntheticCandidate.ToSnapshot(reference);
-            _context.MarketSnapshots.Add(syntheticSnapshot);
-            await _context.SaveChangesAsync(cancellationToken);
-
             return new MarketDataIngestionResult
             {
                 Success = true,
@@ -363,9 +455,6 @@ public sealed class MarketDataService
         {
             var reference = _timeProvider.GetUtcNow();
             var staleSnapshot = bestStaleCandidate.ToSnapshot(reference);
-            _context.MarketSnapshots.Add(staleSnapshot);
-            await _context.SaveChangesAsync(cancellationToken);
-
             return new MarketDataIngestionResult
             {
                 Success = false,
@@ -384,5 +473,48 @@ public sealed class MarketDataService
             ActiveProvider = "none",
             Failures = providerFailures
         };
+    }
+
+    private async Task<MarketDataContract?> GetFromProviderAsync(
+        IMarketDataProvider provider,
+        string symbol,
+        CancellationToken cancellationToken)
+    {
+        var minimumRequestInterval = provider.MinimumRequestInterval;
+        if (minimumRequestInterval < TimeSpan.Zero)
+        {
+            throw new InvalidOperationException(
+                $"{provider.GetType().Name} configured a negative minimum request interval.");
+        }
+
+        if (_lastProviderRequestAtUtc.TryGetValue(provider, out var lastRequestAtUtc))
+        {
+            var remainingDelay = minimumRequestInterval - (_timeProvider.GetUtcNow() - lastRequestAtUtc);
+            if (remainingDelay > TimeSpan.Zero)
+            {
+                await Task.Delay(remainingDelay, _timeProvider, cancellationToken);
+            }
+        }
+
+        _lastProviderRequestAtUtc[provider] = _timeProvider.GetUtcNow();
+        return await provider.GetAsync(symbol, cancellationToken);
+    }
+
+    private async Task PersistSnapshotsAsync(
+        IEnumerable<MarketDataIngestionResult> ingestionResults,
+        CancellationToken cancellationToken)
+    {
+        var snapshots = ingestionResults
+            .Select(result => result.PersistedSnapshot)
+            .Where(snapshot => snapshot is not null)
+            .Cast<MarketSnapshot>()
+            .ToArray();
+        if (snapshots.Length == 0)
+        {
+            return;
+        }
+
+        _context.MarketSnapshots.AddRange(snapshots);
+        await _context.SaveChangesAsync(cancellationToken);
     }
 }

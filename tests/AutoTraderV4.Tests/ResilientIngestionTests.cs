@@ -251,6 +251,50 @@ public class ResilientIngestionTests
         Assert.Equal("Fresh", record.FreshnessStatus);
     }
 
+    [Fact]
+    public async Task MarketDataService_IngestBatchAsync_PacesRequestsAndPersistsSnapshotsTogether()
+    {
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+        await using var context = new ApplicationDbContext(options);
+        var provider = new TimedMarketDataProvider(TimeSpan.FromMilliseconds(30));
+        var service = new MarketDataService(context, [provider], TimeProvider.System);
+
+        var result = await service.IngestBatchAsync(
+            ["AAPL", "MSFT"],
+            maximumSymbols: 2,
+            maximumDuration: TimeSpan.FromSeconds(2));
+
+        Assert.Equal(2, result.Items.Count);
+        Assert.Equal(0, result.DeferredSymbolCount);
+        Assert.True(provider.RequestTimes[1] - provider.RequestTimes[0] >= TimeSpan.FromMilliseconds(20));
+        Assert.Equal(2, await context.MarketSnapshots.CountAsync());
+    }
+
+    [Fact]
+    public async Task MarketDataService_IngestBatchAsync_StopsAtTimeBudgetAndKeepsCompletedSnapshots()
+    {
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+        await using var context = new ApplicationDbContext(options);
+        var provider = new BudgetBlockingMarketDataProvider();
+        var service = new MarketDataService(context, [provider], TimeProvider.System);
+
+        var result = await service.IngestBatchAsync(
+            ["AAPL", "MSFT", "NVDA"],
+            maximumSymbols: 3,
+            maximumDuration: TimeSpan.FromMilliseconds(100));
+
+        Assert.True(result.TimeBudgetExhausted);
+        Assert.Equal(1, result.DeferredSymbolCount);
+        Assert.Equal(2, result.Items.Count);
+        Assert.Contains("time budget expired", Assert.Single(result.Items[1].Ingestion.Failures));
+        Assert.Equal(2, provider.Calls);
+        Assert.Equal("AAPL", (await context.MarketSnapshots.SingleAsync()).Ticker);
+    }
+
     private sealed class StaticMarketDataProvider : IMarketDataProvider
     {
         private readonly MarketDataContract _contract;
@@ -260,9 +304,58 @@ public class ResilientIngestionTests
             _contract = contract;
         }
 
+        public TimeSpan MinimumRequestInterval => TimeSpan.Zero;
+
         public Task<MarketDataContract?> GetAsync(string symbol, CancellationToken cancellationToken = default)
         {
             return Task.FromResult<MarketDataContract?>(_contract);
+        }
+    }
+
+    private sealed class TimedMarketDataProvider(TimeSpan minimumRequestInterval) : IMarketDataProvider
+    {
+        public TimeSpan MinimumRequestInterval => minimumRequestInterval;
+        public List<DateTimeOffset> RequestTimes { get; } = [];
+
+        public Task<MarketDataContract?> GetAsync(string symbol, CancellationToken cancellationToken = default)
+        {
+            RequestTimes.Add(DateTimeOffset.UtcNow);
+            return Task.FromResult<MarketDataContract?>(new MarketDataContract
+            {
+                Symbol = symbol,
+                Ticker = symbol,
+                Price = 100m,
+                IsSynthetic = false,
+                TimestampUtc = DateTimeOffset.UtcNow,
+                ProviderName = "timed-test-provider"
+            });
+        }
+    }
+
+    private sealed class BudgetBlockingMarketDataProvider : IMarketDataProvider
+    {
+        public TimeSpan MinimumRequestInterval => TimeSpan.Zero;
+        public int Calls { get; private set; }
+
+        public async Task<MarketDataContract?> GetAsync(
+            string symbol,
+            CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            if (Calls == 2)
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+
+            return new MarketDataContract
+            {
+                Symbol = symbol,
+                Ticker = symbol,
+                Price = 100m,
+                IsSynthetic = false,
+                TimestampUtc = DateTimeOffset.UtcNow,
+                ProviderName = "budget-test-provider"
+            };
         }
     }
 
