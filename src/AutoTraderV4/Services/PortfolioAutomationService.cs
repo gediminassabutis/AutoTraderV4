@@ -1,4 +1,5 @@
 using System.Linq;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -93,23 +94,28 @@ public sealed class PortfolioReviewService
 
 public sealed class BuyOpportunityService
 {
+    private const int MaximumRecentSignals = 200;
+    private const int MaximumCandidates = 20;
+    private const int MinimumFinalScore = 75;
+    private const int MinimumConfidenceScore = 80;
+
+    private readonly ApplicationDbContext _context;
     private readonly IPortfolioRepository _repository;
-    private readonly IPortfolioDashboardService _dashboardService;
     private readonly RiskGovernanceService _riskGovernanceService;
     private readonly PortfolioStateSyncService _portfolioStateSyncService;
     private readonly MarketDataService _marketDataService;
     private readonly ILogger<BuyOpportunityService> _logger;
 
     public BuyOpportunityService(
+        ApplicationDbContext context,
         IPortfolioRepository repository,
-        IPortfolioDashboardService dashboardService,
         RiskGovernanceService riskGovernanceService,
         PortfolioStateSyncService portfolioStateSyncService,
         MarketDataService marketDataService,
         ILogger<BuyOpportunityService> logger)
     {
+        _context = context ?? throw new ArgumentNullException(nameof(context));
         _repository = repository ?? throw new ArgumentNullException(nameof(repository));
-        _dashboardService = dashboardService ?? throw new ArgumentNullException(nameof(dashboardService));
         _riskGovernanceService = riskGovernanceService ?? throw new ArgumentNullException(nameof(riskGovernanceService));
         _portfolioStateSyncService = portfolioStateSyncService ?? throw new ArgumentNullException(nameof(portfolioStateSyncService));
         _marketDataService = marketDataService ?? throw new ArgumentNullException(nameof(marketDataService));
@@ -128,16 +134,44 @@ public sealed class BuyOpportunityService
             return [];
         }
 
-        var dashboard = await _dashboardService.GetDashboardAsync(cancellationToken);
         var buyBudget = Math.Min(availableCash, availableCash * 0.5m);
-        var openTickers = new HashSet<string>(positions.Select(x => x.Ticker), StringComparer.OrdinalIgnoreCase);
+        var openTickers = new HashSet<string>(
+            positions.Select(position => position.Ticker.Trim()),
+            StringComparer.OrdinalIgnoreCase);
+        var recentSignals = await _context.StrategySignals
+            .AsNoTracking()
+            .OrderByDescending(signal => signal.CreatedUtc)
+            .Take(MaximumRecentSignals)
+            .ToListAsync(cancellationToken);
+        var candidates = recentSignals
+            .Where(signal => !string.IsNullOrWhiteSpace(signal.Ticker))
+            .GroupBy(signal => signal.Ticker.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .Where(signal => string.Equals(signal.Side, OrderSide.Buy.ToString(), StringComparison.OrdinalIgnoreCase))
+            .Select(signal =>
+            {
+                var score = StrategySignalScoring.CalculateSignedScore(signal.Signal);
+                var confidence = StrategySignalScoring.CalculateConfidence(signal.Signal);
+                return new BuyCandidate(
+                    signal.Ticker.Trim().ToUpperInvariant(),
+                    score,
+                    confidence,
+                    StrategySignalScoring.GetRating(score),
+                    signal.Signal * 8m);
+            })
+            .Where(candidate => !openTickers.Contains(candidate.Symbol))
+            .Where(candidate => candidate.FinalScore >= MinimumFinalScore)
+            .Where(candidate => candidate.ConfidenceScore >= MinimumConfidenceScore)
+            .Where(candidate => candidate.Rating is "Buy" or "Strong Buy")
+            .OrderByDescending(candidate => candidate.ConfidenceScore)
+            .ThenByDescending(candidate => candidate.FinalScore)
+            .Take(MaximumCandidates)
+            .ToList();
+
         var decisions = new List<BuyOpportunityDecision>();
         var remainingBudget = buyBudget;
 
-        foreach (var opportunity in dashboard.Watchlist
-                     .Where(opportunity => !opportunity.IsSynthetic)
-                     .Where(x => !openTickers.Contains(x.Symbol))
-                     .OrderByDescending(x => x.Confidence))
+        foreach (var opportunity in candidates)
         {
             if (remainingBudget <= 0m)
             {
@@ -145,7 +179,9 @@ public sealed class BuyOpportunityService
             }
 
             var ingestion = await _marketDataService.IngestAsync(opportunity.Symbol, cancellationToken);
-            if (!ingestion.Success || ingestion.Data is null)
+            if (!ingestion.Success
+                || ingestion.FreshnessStatus != DataFreshnessStatus.Fresh
+                || ingestion.Data is null)
             {
                 _logger.LogWarning(
                     "Skipping {Ticker}; no fresh market data is available. Provider failures: {Failures}",
@@ -161,14 +197,6 @@ public sealed class BuyOpportunityService
                     "Skipping {Ticker}; the only available market data is synthetic from {Provider}.",
                     opportunity.Symbol,
                     marketData.ProviderName);
-                continue;
-            }
-
-            if (opportunity.IsSynthetic)
-            {
-                _logger.LogWarning(
-                    "Skipping {Ticker}; strategy scores are synthetic and cannot be used to approve an entry.",
-                    opportunity.Symbol);
                 continue;
             }
 
@@ -203,9 +231,9 @@ public sealed class BuyOpportunityService
                 EntryPrice = price,
                 StopLoss = stopLoss,
                 TakeProfit = takeProfit,
-                ConfidenceScore = opportunity.Confidence,
+                ConfidenceScore = opportunity.ConfidenceScore,
                 Rating = opportunity.Rating,
-                FinalScore = opportunity.Confidence,
+                FinalScore = opportunity.FinalScore,
                 RiskReward = Math.Round(riskReward, 2, MidpointRounding.AwayFromZero),
                 TriggeringStrategy = "Portfolio automation",
                 EligibleForExecution = true
@@ -214,7 +242,7 @@ public sealed class BuyOpportunityService
             var riskContext = new RiskContextSnapshot
             {
                 Symbol = opportunity.Symbol,
-                Sector = opportunity.Sector,
+                Sector = ResolveSector(marketData),
                 LiquidityScore = marketData.LiquidityScore.Value,
                 SpreadPercent = marketData.SpreadPercent.Value,
                 ObservedAtUtc = marketData.TimestampUtc
@@ -233,7 +261,7 @@ public sealed class BuyOpportunityService
                 Quantity = quantity,
                 EstimatedCost = estimatedCost,
                 CashBudget = remainingBudget,
-                ConfidenceScore = opportunity.Confidence,
+                ConfidenceScore = opportunity.ConfidenceScore,
                 Rating = opportunity.Rating,
                 Reason = $"{opportunity.Rating} with {opportunity.ForecastReturn:F2}% expected return and acceptable risk."
             });
@@ -247,6 +275,22 @@ public sealed class BuyOpportunityService
 
         return decisions;
     }
+
+    private static string ResolveSector(MarketDataContract marketData)
+    {
+        return marketData.Metadata.TryGetValue("sector", out var sector)
+            && sector is string sectorName
+            && !string.IsNullOrWhiteSpace(sectorName)
+                ? sectorName.Trim()
+                : "Unknown";
+    }
+
+    private sealed record BuyCandidate(
+        string Symbol,
+        int FinalScore,
+        int ConfidenceScore,
+        string Rating,
+        decimal ForecastReturn);
 }
 
 public sealed class PortfolioAutomationBackgroundService : BackgroundService
@@ -305,11 +349,15 @@ public sealed class PortfolioAutomationBackgroundService : BackgroundService
     private async Task RunAutomationCycleAsync(CancellationToken cancellationToken)
     {
         using var scope = _scopeFactory.CreateScope();
-        var reviewService = scope.ServiceProvider.GetRequiredService<PortfolioReviewService>();
-        var buyService = scope.ServiceProvider.GetRequiredService<BuyOpportunityService>();
+        var stockTrackingService = scope.ServiceProvider.GetRequiredService<StockTrackingService>();
+        var cycleResult = await stockTrackingService.RunCycleAsync(cancellationToken);
 
-        var sellDecisions = await reviewService.ReviewOpenPositionsAsync(cancellationToken);
-        foreach (var decision in sellDecisions)
+        foreach (var ticker in cycleResult.UpdatedTickers)
+        {
+            _logger.LogDebug("Updated the current market tick for {Ticker}.", ticker);
+        }
+
+        foreach (var decision in cycleResult.SellRecommendations)
         {
             _logger.LogInformation(
                 "Portfolio review: {Recommendation} {Ticker}. {Reason}",
@@ -318,8 +366,7 @@ public sealed class PortfolioAutomationBackgroundService : BackgroundService
                 decision.Reason);
         }
 
-        var buyDecisions = await buyService.ScanForBuysAsync(cancellationToken);
-        foreach (var decision in buyDecisions)
+        foreach (var decision in cycleResult.BuyOpportunities)
         {
             _logger.LogInformation(
                 "Portfolio opportunity: buy {Ticker} {Quantity} shares for {EstimatedCost:C} ({Rating}, confidence {ConfidenceScore}).",

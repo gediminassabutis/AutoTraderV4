@@ -65,7 +65,7 @@ On startup, the app creates the EF schema when the configured database is empty.
 
 The app falls back to demo data automatically when `Trading212:UseDemoData` is `true` or when the API key/secret are left blank. This keeps the dashboard working on a clean machine without a live Trading 212 subscription.
 
-On startup, the app begins a five-minute review loop that computes sell triggers and scans buy candidates. It logs recommendations only; broker order submission is intentionally disabled until authenticated execution, verified market data, and complete risk telemetry are available.
+On startup, the app begins a five-minute stock-tracking cycle. It refreshes prices for held positions, stores timestamped market snapshots, updates each position's current price only from fresh non-synthetic data, and screens the latest strategy buy signals for unheld stocks. Buy recommendations require fresh measured liquidity and spread plus the configured score and portfolio risk checks. The service logs recommendations only; broker order submission is intentionally disabled until authenticated execution and complete risk telemetry are available.
 
 For test-only runs without a PostgreSQL instance, set the app to use EF Core's in-memory database:
 

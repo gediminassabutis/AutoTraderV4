@@ -297,7 +297,7 @@ public sealed class PortfolioDashboardService : IPortfolioDashboardService
             .Select(item =>
             {
                 latestSignalsByTicker.TryGetValue(item.Position.Ticker, out var latestSignal);
-                int? confidence = latestSignal is null ? null : CalculateConfidence(latestSignal.Signal);
+                int? confidence = latestSignal is null ? null : StrategySignalScoring.CalculateConfidence(latestSignal.Signal);
                 decimal? stopLoss = item.Position.StopLoss > 0m ? RoundTo2(item.Position.StopLoss) : null;
                 decimal? takeProfit = item.Position.TakeProfit > 0m ? RoundTo2(item.Position.TakeProfit) : null;
                 var unrealizedPnl = (item.CurrentPrice - item.Position.AveragePrice) * item.Position.Quantity;
@@ -339,8 +339,8 @@ public sealed class PortfolioDashboardService : IPortfolioDashboardService
             .Select(group =>
             {
                 var latestSignal = group.OrderByDescending(signal => signal.CreatedUtc).First();
-                var signedScore = CalculateSignedScore(latestSignal.Signal);
-                var confidence = CalculateConfidence(latestSignal.Signal);
+                var signedScore = StrategySignalScoring.CalculateSignedScore(latestSignal.Signal);
+                var confidence = StrategySignalScoring.CalculateConfidence(latestSignal.Signal);
                 var latestPrice = latestSnapshotsByTicker.TryGetValue(latestSignal.Ticker, out var snapshot)
                     ? snapshot.Price
                     : 0m;
@@ -351,7 +351,7 @@ public sealed class PortfolioDashboardService : IPortfolioDashboardService
                 return new WatchlistOpportunity
                 {
                     Symbol = latestSignal.Ticker,
-                    Rating = GetRating(signedScore),
+                    Rating = StrategySignalScoring.GetRating(signedScore),
                     Confidence = confidence,
                     ForecastReturn = RoundTo2(latestSignal.Signal * 8m),
                     RiskScore = RoundTo2(Math.Min(100m, 20m + volatility)),
@@ -770,30 +770,6 @@ public sealed class PortfolioDashboardService : IPortfolioDashboardService
         }
 
         return RoundTo2(worstDrawdown);
-    }
-
-    private static int CalculateConfidence(decimal signal)
-    {
-        var confidence = 50m + Math.Min(45m, Math.Abs(signal) * 30m);
-        return (int)Math.Round(confidence, MidpointRounding.AwayFromZero);
-    }
-
-    private static int CalculateSignedScore(decimal signal)
-    {
-        var signedScore = 50m + (signal * 25m);
-        return (int)Math.Clamp(Math.Round(signedScore, MidpointRounding.AwayFromZero), 0m, 100m);
-    }
-
-    private static string GetRating(int score)
-    {
-        return score switch
-        {
-            < 40 => "Strong Sell",
-            < 55 => "Sell",
-            < 65 => "Hold",
-            < 80 => "Buy",
-            _ => "Strong Buy"
-        };
     }
 
     private static decimal CalculateVolatilityPercent(IReadOnlyList<MarketSnapshot> snapshots)
