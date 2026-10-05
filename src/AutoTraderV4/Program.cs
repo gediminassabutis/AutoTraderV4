@@ -76,6 +76,17 @@ public partial class Program
         var trading212Options = builder.Configuration.GetSection("Trading212").Get<Trading212Options>() ?? new Trading212Options();
         builder.Services.AddSingleton(trading212Options);
 
+        var stocktwitsMcpOptions = builder.Configuration
+            .GetSection(StocktwitsMcpOptions.SectionName)
+            .Get<StocktwitsMcpOptions>()
+            ?? new StocktwitsMcpOptions();
+        if (stocktwitsMcpOptions.Enabled)
+        {
+            stocktwitsMcpOptions.Validate();
+        }
+
+        builder.Services.AddSingleton(stocktwitsMcpOptions);
+
         var hasTrading212Credentials = !string.IsNullOrWhiteSpace(trading212Options.ApiKey)
             && !string.IsNullOrWhiteSpace(trading212Options.ApiSecret);
         var useDemoData = trading212Options.UseDemoData || !hasTrading212Credentials;
@@ -105,11 +116,18 @@ public partial class Program
         builder.Services.AddSingleton<AuditLogService>();
         builder.Services.AddSingleton<IMarketDataProvider, DemoMarketDataProvider>();
         builder.Services.AddSingleton<IMarketDataProvider, FallbackMarketDataProvider>();
+        builder.Services.AddSingleton<IStocktwitsMcpToolClient, StocktwitsMcpToolClient>();
+        builder.Services.AddSingleton<IStocktwitsSentimentProvider, StocktwitsMcpSentimentProvider>();
+        builder.Services.AddSingleton<ISentimentProvider>(serviceProvider =>
+            serviceProvider.GetRequiredService<IStocktwitsSentimentProvider>());
         builder.Services.AddSingleton<ISentimentProvider, DemoSentimentProvider>();
         builder.Services.AddSingleton<ISentimentProvider, FallbackSentimentProvider>();
+
         builder.Services.AddScoped<MarketDataService>();
         builder.Services.AddScoped<SentimentService>();
         builder.Services.AddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton<StocktwitsMcpRequestRateLimiter>();
+        builder.Services.AddSingleton<SentimentRecordWriteGate>();
         builder.Services.AddScoped<WeightedStrategyEngineService>();
         builder.Services.AddScoped<PortfolioStateSyncService>(serviceProvider =>
             new PortfolioStateSyncService(
@@ -307,6 +325,91 @@ public partial class Program
 
         app.MapGet("/api/market-data/status", (MarketDataService marketDataService) =>
             Results.Ok(marketDataService.GetReadiness()));
+
+        app.MapGet("/api/settings/stocktwits-mcp", (StocktwitsMcpOptions options) =>
+            Results.Ok(new StocktwitsMcpSettings(options.Enabled)));
+
+        app.MapPut("/api/settings/stocktwits-mcp", (StocktwitsMcpSettings settings, StocktwitsMcpOptions options) =>
+        {
+            if (settings.Enabled)
+            {
+                try
+                {
+                    options.Validate();
+                }
+                catch (ArgumentException exception)
+                {
+                    return Results.ValidationProblem(new Dictionary<string, string[]>
+                    {
+                        ["StocktwitsMcp"] = [exception.Message]
+                    });
+                }
+                catch (FileNotFoundException exception)
+                {
+                    return Results.ValidationProblem(new Dictionary<string, string[]>
+                    {
+                        ["StocktwitsMcp"] = [exception.Message]
+                    });
+                }
+            }
+
+            options.Enabled = settings.Enabled;
+            return Results.Ok(new StocktwitsMcpSettings(options.Enabled));
+        });
+
+        app.MapGet("/api/sentiment/{symbol}", async (
+            string symbol,
+            ApplicationDbContext context,
+            CancellationToken cancellationToken) =>
+        {
+            var normalizedSymbol = (symbol ?? string.Empty).Trim().ToUpperInvariant();
+            if (normalizedSymbol.Length == 0)
+            {
+                return Results.BadRequest(new { error = "Symbol is required." });
+            }
+
+            var record = await context.SentimentRecords
+                .AsNoTracking()
+                .Where(item => item.Ticker == normalizedSymbol || item.Symbol == normalizedSymbol)
+                .OrderByDescending(item => item.RecordedAtUtc)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            return record is null ? Results.NotFound(new { symbol = normalizedSymbol }) : Results.Ok(record);
+        });
+
+        app.MapPost("/api/sentiment/{symbol}/ingest", async (
+            string symbol,
+            SentimentService sentimentService,
+            StocktwitsMcpOptions options,
+            CancellationToken cancellationToken) =>
+        {
+            if (!options.Enabled)
+            {
+                return Results.Problem(
+                    title: "Stocktwits MCP is disabled.",
+                    detail: $"Set {StocktwitsMcpOptions.SectionName}:Enabled=true to enable ingestion.",
+                    statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
+
+            if (string.IsNullOrWhiteSpace(symbol))
+            {
+                return Results.BadRequest(new { error = "Symbol is required." });
+            }
+
+            var result = await sentimentService.IngestAsync(symbol, cancellationToken);
+            if (!result.Success)
+            {
+                var detail = result.Failures.Count > 0
+                    ? string.Join("; ", result.Failures)
+                    : $"No fresh sentiment data was returned ({result.FreshnessStatus}).";
+                return Results.Problem(
+                    title: "Stocktwits sentiment ingestion failed.",
+                    detail: detail,
+                    statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
+
+            return Results.Ok(result);
+        });
 
         app.MapGet("/api/risk/summary", async ([FromServices] IPortfolioDashboardService dashboardService, [FromServices] global::AutoTraderV4.PortfolioRiskService riskService, CancellationToken cancellationToken) =>
         {

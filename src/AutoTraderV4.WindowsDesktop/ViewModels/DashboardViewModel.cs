@@ -13,6 +13,10 @@ public sealed class DashboardViewModel : INotifyPropertyChanged
     private bool _isLoading;
     private bool _isRunningStockTracking;
     private string _statusMessage = "Connecting to the AutoTrader backend...";
+    private bool _stocktwitsMcpEnabled;
+    private bool _stocktwitsSettingsLoaded;
+    private bool _isUpdatingStocktwitsMcp;
+    private string _stocktwitsMcpStatusMessage = "Loading Stocktwits MCP setting...";
 
     public DashboardViewModel(PortfolioDashboardClient dashboardClient)
     {
@@ -80,6 +84,38 @@ public sealed class DashboardViewModel : INotifyPropertyChanged
         }
     }
 
+    public bool IsStocktwitsMcpEnabled
+    {
+        get => _stocktwitsMcpEnabled;
+        private set
+        {
+            if (_stocktwitsMcpEnabled == value)
+            {
+                return;
+            }
+
+            _stocktwitsMcpEnabled = value;
+            OnPropertyChanged();
+        }
+    }
+
+    public bool CanUpdateStocktwitsMcp => _stocktwitsSettingsLoaded && !_isUpdatingStocktwitsMcp;
+
+    public string StocktwitsMcpStatusMessage
+    {
+        get => _stocktwitsMcpStatusMessage;
+        private set
+        {
+            if (_stocktwitsMcpStatusMessage == value)
+            {
+                return;
+            }
+
+            _stocktwitsMcpStatusMessage = value;
+            OnPropertyChanged();
+        }
+    }
+
     public bool IsRunningStockTracking
     {
         get => _isRunningStockTracking;
@@ -102,6 +138,21 @@ public sealed class DashboardViewModel : INotifyPropertyChanged
 
         try
         {
+            try
+            {
+                var settings = await _dashboardClient.GetStocktwitsMcpSettingsAsync(cancellationToken);
+                IsStocktwitsMcpEnabled = settings.Enabled;
+                _stocktwitsSettingsLoaded = true;
+                StocktwitsMcpStatusMessage = settings.Enabled
+                    ? "Enabled; stats update during tracking cycles."
+                    : "Disabled; no Stocktwits requests will be made.";
+            }
+            catch (Exception ex)
+            {
+                _stocktwitsSettingsLoaded = false;
+                StocktwitsMcpStatusMessage = $"Unable to load setting: {ex.Message}";
+            }
+
             var dashboard = await _dashboardClient.GetDashboardAsync(cancellationToken);
             Dashboard = dashboard;
             StatusMessage = dashboard.Summary.TotalPortfolioValue > 0m
@@ -116,6 +167,36 @@ public sealed class DashboardViewModel : INotifyPropertyChanged
         finally
         {
             IsLoading = false;
+        }
+    }
+
+    public async Task UpdateStocktwitsMcpEnabledAsync(bool enabled, CancellationToken cancellationToken = default)
+    {
+        if (!CanUpdateStocktwitsMcp || enabled == IsStocktwitsMcpEnabled)
+        {
+            return;
+        }
+
+        _isUpdatingStocktwitsMcp = true;
+        StocktwitsMcpStatusMessage = "Saving Stocktwits MCP setting...";
+        OnPropertyChanged(nameof(CanUpdateStocktwitsMcp));
+
+        try
+        {
+            var settings = await _dashboardClient.UpdateStocktwitsMcpSettingsAsync(enabled, cancellationToken);
+            IsStocktwitsMcpEnabled = settings.Enabled;
+            StocktwitsMcpStatusMessage = settings.Enabled
+                ? "Enabled; stats update during tracking cycles."
+                : "Disabled; no Stocktwits requests will be made.";
+        }
+        catch (Exception ex)
+        {
+            StocktwitsMcpStatusMessage = $"Unable to update setting: {ex.Message}";
+        }
+        finally
+        {
+            _isUpdatingStocktwitsMcp = false;
+            OnPropertyChanged(nameof(CanUpdateStocktwitsMcp));
         }
     }
 
@@ -155,6 +236,16 @@ public sealed class DashboardViewModel : INotifyPropertyChanged
             if (!string.IsNullOrWhiteSpace(result.NewStockDiscoveryError))
             {
                 status += $" New stock discovery failed: {result.NewStockDiscoveryError}";
+            }
+
+            if (result.SentimentTickers.Count > 0)
+            {
+                status += $" Stocktwits stats saved for {result.SentimentTickers.Count} positions.";
+            }
+
+            if (result.SentimentFailures.Count > 0)
+            {
+                status += $" Stocktwits ingestion failed: {string.Join("; ", result.SentimentFailures)}";
             }
 
             if (!result.MarketDataReadiness.LiveProviderConfigured

@@ -35,6 +35,7 @@ public partial class MainWindow : Window
         Loaded += MainWindow_Loaded;
         Closed += MainWindow_Closed;
         ApplyRefreshIntervalButton.Click += ApplyRefreshIntervalButton_Click;
+        StocktwitsMcpCheckBox.Click += StocktwitsMcpCheckBox_Click;
         RefreshButton.Click += RefreshButton_Click;
         RunStockTrackingButton.Click += RunStockTrackingButton_Click;
     }
@@ -47,6 +48,19 @@ public partial class MainWindow : Window
     private async void RefreshButton_Click(object sender, RoutedEventArgs e)
     {
         await RefreshDashboardAsync();
+    }
+
+    private async void StocktwitsMcpCheckBox_Click(object sender, RoutedEventArgs e)
+    {
+        if (StocktwitsMcpCheckBox.IsChecked is not bool enabled)
+        {
+            return;
+        }
+
+        var updateTask = _viewModel.UpdateStocktwitsMcpEnabledAsync(enabled);
+        BindViewModel();
+        await updateTask;
+        BindViewModel();
     }
 
     private async void RefreshTimer_Tick(object? sender, EventArgs e)
@@ -167,6 +181,10 @@ public partial class MainWindow : Window
         MonthlyPnLText.Text = FormatCurrency(_viewModel.Dashboard.Summary.MonthlyPnL, currency);
         ExposureText.Text = $"{_viewModel.Dashboard.Summary.TotalExposurePercent:F2}%";
         StatusText.Text = _viewModel.StatusMessage;
+        StocktwitsMcpCheckBox.IsChecked = _viewModel.IsStocktwitsMcpEnabled;
+        StocktwitsMcpCheckBox.IsEnabled = _viewModel.CanUpdateStocktwitsMcp;
+        StocktwitsMcpStatusText.Text = _viewModel.StocktwitsMcpStatusMessage;
+        StocktwitsMcpStatusText.ToolTip = _viewModel.StocktwitsMcpStatusMessage;
 
         PositionsGrid.ItemsSource = _viewModel.Positions;
         WatchlistGrid.ItemsSource = _viewModel.Watchlist;

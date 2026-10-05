@@ -51,6 +51,33 @@ public class ApiIntegrationTests
     }
 
     [Fact]
+    public async Task StocktwitsMcpSettingsEndpoint_UpdatesRuntimeSetting()
+    {
+        await using var app = await TestWebApplication.CreateAsync();
+
+        using var initialResponse = await app.Client.GetAsync("/api/settings/stocktwits-mcp");
+        Assert.Equal(HttpStatusCode.OK, initialResponse.StatusCode);
+        var initialSettings = await initialResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(initialSettings.GetProperty("enabled").GetBoolean());
+
+        using var updateResponse = await app.Client.PutAsJsonAsync(
+            "/api/settings/stocktwits-mcp",
+            new { enabled = true });
+        Assert.Equal(HttpStatusCode.OK, updateResponse.StatusCode);
+        var updatedSettings = await updateResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(updatedSettings.GetProperty("enabled").GetBoolean());
+
+        using var currentResponse = await app.Client.GetAsync("/api/settings/stocktwits-mcp");
+        var currentSettings = await currentResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(currentSettings.GetProperty("enabled").GetBoolean());
+
+        using var disableResponse = await app.Client.PutAsJsonAsync(
+            "/api/settings/stocktwits-mcp",
+            new { enabled = false });
+        Assert.Equal(HttpStatusCode.OK, disableResponse.StatusCode);
+    }
+
+    [Fact]
     public async Task PositionsEndpoint_ReturnsPersistedPositionsInTickerOrder()
     {
         await using var app = await TestWebApplication.CreateAsync(context =>

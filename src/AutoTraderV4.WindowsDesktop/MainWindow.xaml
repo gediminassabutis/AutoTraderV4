@@ -93,16 +93,19 @@
                         <TextBlock Text="Auto-refresh (5-3600 sec)" Foreground="#94a3b8" VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBox x:Name="RefreshIntervalInput" Text="60" Width="58" Height="34" Background="#0b1424" Foreground="#e2e8f0" BorderBrush="#334155" Padding="8,5" VerticalContentAlignment="Center"/>
                         <Button x:Name="ApplyRefreshIntervalButton" Content="Apply" Width="64" Height="34" Margin="6,0,10,0" Background="#334155" Foreground="White" BorderThickness="0" FontWeight="SemiBold"/>
+                        <CheckBox x:Name="StocktwitsMcpCheckBox" Content="Stocktwits MCP" IsEnabled="False" Foreground="#e2e8f0" VerticalAlignment="Center" Margin="0,0,10,0" ToolTip="Enable sentiment and stock-stat collection from the Stocktwits MCP server."/>
                         <Button x:Name="RefreshButton" Content="Refresh" Width="100" Height="34" Margin="0,0,8,0" Background="#4f46e5" Foreground="White" BorderThickness="0" FontWeight="SemiBold"/>
                         <Button x:Name="RunStockTrackingButton" Content="Run tracking now" Width="132" Height="34" Background="#0891b2" Foreground="White" BorderThickness="0" FontWeight="SemiBold"/>
                     </StackPanel>
                     <Grid Margin="0,10,0,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="180"/>
                         </Grid.ColumnDefinitions>
                         <TextBlock x:Name="CountdownText" Text="Next dashboard refresh in 01:00" Foreground="#94a3b8" FontSize="12" VerticalAlignment="Center" Margin="0,0,10,0"/>
-                        <ProgressBar x:Name="RefreshProgressBar" Grid.Column="1" Height="8" Minimum="0" Maximum="100" Value="0" Foreground="#06b6d4" Background="#1e293b" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="StocktwitsMcpStatusText" Grid.Column="1" Text="Loading Stocktwits MCP setting..." Foreground="#94a3b8" FontSize="12" VerticalAlignment="Center" Margin="0,0,10,0" TextTrimming="CharacterEllipsis"/>
+                        <ProgressBar x:Name="RefreshProgressBar" Grid.Column="2" Height="8" Minimum="0" Maximum="100" Value="0" Foreground="#06b6d4" Background="#1e293b" VerticalAlignment="Center"/>
                     </Grid>
                 </StackPanel>
             </Grid>

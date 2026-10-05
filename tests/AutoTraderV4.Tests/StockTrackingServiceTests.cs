@@ -489,6 +489,21 @@ public sealed class StockTrackingServiceTests
             portfolioSync,
             marketData,
             NullLogger<BuyOpportunityService>.Instance);
+        var sentimentService = new SentimentService(
+            context,
+            [
+                new StaticSentimentProvider(new SentimentDataContract
+                {
+                    Symbol = "NVDA",
+                    Score = 35m,
+                    Magnitude = 65m,
+                    Confidence = 80m,
+                    TimestampUtc = DateTimeOffset.UtcNow,
+                    Source = "stocktwits",
+                    ProviderName = "stocktwits-mcp",
+                    FreshnessWindow = TimeSpan.FromMinutes(15)
+                })
+            ]);
         var service = new StockTrackingService(
             context,
             repository,
@@ -507,7 +522,9 @@ public sealed class StockTrackingServiceTests
             new PortfolioReviewService(repository),
             buyService,
             NullLogger<StockTrackingService>.Instance,
-            new StockTrackingCycleGate());
+            new StockTrackingCycleGate(),
+            sentimentService,
+            new StocktwitsMcpOptions { Enabled = true });
 
         var result = await service.RunCycleAsync();
 
@@ -515,6 +532,9 @@ public sealed class StockTrackingServiceTests
         Assert.Equal("non-actionable", result.MarketDataReadiness.Mode);
         Assert.Empty(result.UpdatedTickers);
         Assert.Empty(result.BuyOpportunities);
+        Assert.Equal(["NVDA"], result.SentimentTickers);
+        Assert.Empty(result.SentimentFailures);
+        Assert.Equal("stocktwits-mcp", (await context.SentimentRecords.SingleAsync()).ProviderName);
         Assert.Equal("ABC_US_EQ", Assert.Single(result.NewStocks).Ticker);
         Assert.Equal(2, result.TrackedStockCount);
         Assert.Equal(1, result.NewlyTrackedStockCount);
@@ -626,6 +646,14 @@ public sealed class StockTrackingServiceTests
         {
             Calls++;
             return Task.FromResult<MarketDataContract?>(createContract(symbol));
+        }
+    }
+
+    private sealed class StaticSentimentProvider(SentimentDataContract contract) : ISentimentProvider
+    {
+        public Task<SentimentDataContract?> GetAsync(string symbol, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<SentimentDataContract?>(contract);
         }
     }
 

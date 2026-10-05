@@ -90,10 +90,17 @@ public sealed class StockTrackingCycleResult
     public int StockTicksCollected { get; set; }
     public int DeferredStockTickCount { get; set; }
     public bool StockTickCollectionBudgetExhausted { get; set; }
+    public List<string> SentimentTickers { get; set; } = [];
+    public List<string> SentimentFailures { get; set; } = [];
     public List<StockTrackingTickerResult> SellRecommendations { get; set; } = [];
     public List<StockTrackingTickerResult> BuyOpportunities { get; set; } = [];
     public List<StockTrackingNewStockResult> NewStocks { get; set; } = [];
     public string? NewStockDiscoveryError { get; set; }
+}
+
+public sealed class StocktwitsMcpSettingsView
+{
+    public bool Enabled { get; set; }
 }
 
 public sealed class MarketDataReadinessView
