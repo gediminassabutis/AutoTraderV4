@@ -85,11 +85,25 @@
                     <TextBlock Text="Windows Desktop UI" FontSize="14" Foreground="#cbd5e1" Margin="0,4,0,0"/>
                 </StackPanel>
 
-                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                    <Border Background="#1d4ed8" CornerRadius="16" Padding="10,6" Margin="0,0,10,0">
-                        <TextBlock Text="Live dashboard" Foreground="White" FontWeight="SemiBold"/>
-                    </Border>
-                    <Button x:Name="RefreshButton" Content="Refresh" Width="100" Height="34" Background="#4f46e5" Foreground="White" BorderThickness="0" FontWeight="SemiBold"/>
+                <StackPanel Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Right">
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Border Background="#1d4ed8" CornerRadius="16" Padding="10,6" Margin="0,0,10,0" VerticalAlignment="Center">
+                            <TextBlock Text="Live dashboard" Foreground="White" FontWeight="SemiBold"/>
+                        </Border>
+                        <TextBlock Text="Auto-refresh (5-3600 sec)" Foreground="#94a3b8" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <TextBox x:Name="RefreshIntervalInput" Text="60" Width="58" Height="34" Background="#0b1424" Foreground="#e2e8f0" BorderBrush="#334155" Padding="8,5" VerticalContentAlignment="Center"/>
+                        <Button x:Name="ApplyRefreshIntervalButton" Content="Apply" Width="64" Height="34" Margin="6,0,10,0" Background="#334155" Foreground="White" BorderThickness="0" FontWeight="SemiBold"/>
+                        <Button x:Name="RefreshButton" Content="Refresh" Width="100" Height="34" Margin="0,0,8,0" Background="#4f46e5" Foreground="White" BorderThickness="0" FontWeight="SemiBold"/>
+                        <Button x:Name="RunStockTrackingButton" Content="Run tracking now" Width="132" Height="34" Background="#0891b2" Foreground="White" BorderThickness="0" FontWeight="SemiBold"/>
+                    </StackPanel>
+                    <Grid Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="180"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="CountdownText" Text="Next dashboard refresh in 01:00" Foreground="#94a3b8" FontSize="12" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                        <ProgressBar x:Name="RefreshProgressBar" Grid.Column="1" Height="8" Minimum="0" Maximum="100" Value="0" Foreground="#06b6d4" Background="#1e293b" VerticalAlignment="Center"/>
+                    </Grid>
                 </StackPanel>
             </Grid>
         </Border>

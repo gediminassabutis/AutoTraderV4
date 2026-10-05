@@ -318,6 +318,11 @@ public partial class Program
             return Results.Ok(await buyOpportunityService.ScanForBuysAsync(cancellationToken));
         });
 
+        app.MapPost("/api/stock-tracking/run-cycle", async (StockTrackingService stockTrackingService, CancellationToken cancellationToken) =>
+        {
+            return Results.Ok(await stockTrackingService.RunCycleAsync(cancellationToken));
+        });
+
         app.MapGet("/api/portfolio", async (PortfolioService portfolioService, CancellationToken cancellationToken) =>
         {
             return Results.Ok(await portfolioService.GetSnapshotAsync(cancellationToken));

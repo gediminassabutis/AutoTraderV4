@@ -80,3 +80,22 @@ public sealed class DashboardAlert
     public string Severity { get; set; } = "info";
     public DateTimeOffset TimeUtc { get; set; } = DateTimeOffset.UtcNow;
 }
+
+public sealed class StockTrackingCycleResult
+{
+    public MarketDataReadinessView MarketDataReadiness { get; set; } = new();
+    public List<string> UpdatedTickers { get; set; } = [];
+    public List<StockTrackingTickerResult> SellRecommendations { get; set; } = [];
+    public List<StockTrackingTickerResult> BuyOpportunities { get; set; } = [];
+}
+
+public sealed class MarketDataReadinessView
+{
+    public bool LiveProviderConfigured { get; set; }
+    public string Message { get; set; } = string.Empty;
+}
+
+public sealed class StockTrackingTickerResult
+{
+    public string Ticker { get; set; } = string.Empty;
+}
