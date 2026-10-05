@@ -34,6 +34,7 @@ public sealed class PortfolioAutomationTests
         services.AddScoped<IPortfolioDashboardService, PortfolioDashboardService>();
         services.AddScoped<PortfolioReviewService>();
         services.AddScoped<BuyOpportunityService>();
+        services.AddSingleton<StockTrackingCycleGate>();
         services.AddScoped<StockTrackingService>();
 
         await using var provider = services.BuildServiceProvider();

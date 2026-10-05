@@ -107,6 +107,7 @@ public partial class Program
         builder.Services.AddScoped<PortfolioService>();
         builder.Services.AddScoped<PortfolioReviewService>();
         builder.Services.AddScoped<BuyOpportunityService>();
+        builder.Services.AddSingleton<StockTrackingCycleGate>();
         builder.Services.AddScoped<StockTrackingService>();
         builder.Services.AddHostedService<PortfolioAutomationBackgroundService>();
 
