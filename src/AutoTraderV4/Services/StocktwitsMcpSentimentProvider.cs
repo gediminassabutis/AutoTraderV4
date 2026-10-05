@@ -1,18 +1,23 @@
-using System.Collections.Concurrent;
 using System.Text.Json;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace AutoTraderV4.Services;
 
-public sealed class StocktwitsMcpSentimentProvider : IStocktwitsSentimentProvider
+public sealed class StocktwitsMcpSentimentProvider : IStocktwitsSentimentProvider, IDisposable
 {
     private const string SentimentToolName = "get_symbol_sentiment";
     private const string StockStatsToolName = "get_stock_price";
+    private const int MaximumCachedSymbols = 512;
+    private const int SymbolLockCount = 64;
+    private static readonly TimeSpan FailedRequestBackoff = TimeSpan.FromMinutes(5);
 
     private readonly IStocktwitsMcpToolClient _client;
     private readonly StocktwitsMcpOptions _options;
     private readonly TimeProvider _timeProvider;
-    private readonly ConcurrentDictionary<string, SentimentDataContract> _cache = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _symbolLocks = new(StringComparer.OrdinalIgnoreCase);
+    private readonly MemoryCache _cache = new(new MemoryCacheOptions { SizeLimit = MaximumCachedSymbols });
+    private readonly SemaphoreSlim[] _symbolLocks = Enumerable.Range(0, SymbolLockCount)
+        .Select(_ => new SemaphoreSlim(1, 1))
+        .ToArray();
 
     public StocktwitsMcpSentimentProvider(
         IStocktwitsMcpToolClient client,
@@ -22,13 +27,19 @@ public sealed class StocktwitsMcpSentimentProvider : IStocktwitsSentimentProvide
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _timeProvider = timeProvider ?? TimeProvider.System;
-        _options.Validate();
     }
 
     public async Task<SentimentDataContract?> GetAsync(
         string symbol,
         CancellationToken cancellationToken = default)
     {
+        if (!_options.Enabled)
+        {
+            return null;
+        }
+
+        _options.Validate();
+
         var portfolioTicker = (symbol ?? string.Empty).Trim().ToUpperInvariant();
         var stocktwitsSymbol = NormalizeStocktwitsSymbol(portfolioTicker);
         if (string.IsNullOrWhiteSpace(stocktwitsSymbol))
@@ -36,84 +47,137 @@ public sealed class StocktwitsMcpSentimentProvider : IStocktwitsSentimentProvide
             return null;
         }
 
-        var symbolLock = _symbolLocks.GetOrAdd(portfolioTicker, static _ => new SemaphoreSlim(1, 1));
+        var symbolLockIndex = StringComparer.OrdinalIgnoreCase.GetHashCode(portfolioTicker) & int.MaxValue;
+        var symbolLock = _symbolLocks[symbolLockIndex % _symbolLocks.Length];
         await symbolLock.WaitAsync(cancellationToken);
         try
         {
-            var now = _timeProvider.GetUtcNow();
-            if (_cache.TryGetValue(portfolioTicker, out var cached))
+            if (!_options.Enabled)
             {
-                var cacheAge = now - cached.TimestampUtc;
-                if (cacheAge >= TimeSpan.Zero && cacheAge < _options.RefreshInterval)
+                return null;
+            }
+
+            var now = _timeProvider.GetUtcNow();
+            if (_cache.TryGetValue(portfolioTicker, out CachedProviderResult? cached))
+            {
+                if (cached?.Failure is not null)
                 {
-                    return cached;
+                    throw new InvalidOperationException(
+                        $"Stocktwits refresh for {portfolioTicker} is backed off after a recent failure: {cached.Failure}");
+                }
+
+                if (cached?.Data is { } cachedData)
+                {
+                    var cacheAge = now - cachedData.TimestampUtc;
+                    if (cacheAge >= TimeSpan.Zero && cacheAge < _options.RefreshInterval)
+                    {
+                        return cachedData;
+                    }
                 }
             }
 
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(_options.RequestTimeout);
-
-            var sentimentStats = await _client.CallAsync(SentimentToolName, stocktwitsSymbol, timeout.Token);
-            EnsureNoToolError(sentimentStats, SentimentToolName);
-
-            var stockStats = await _client.CallAsync(StockStatsToolName, stocktwitsSymbol, timeout.Token);
-            EnsureNoToolError(stockStats, StockStatsToolName);
-
-            var messagesAnalyzed = ReadNonNegativeInteger(sentimentStats, "messages_analyzed");
-            var bullish = ReadNonNegativeInteger(sentimentStats, "bullish");
-            var bearish = ReadNonNegativeInteger(sentimentStats, "bearish");
-            var neutral = ReadNonNegativeInteger(sentimentStats, "neutral");
-            if (bullish + bearish + neutral != messagesAnalyzed)
+            try
             {
-                throw new InvalidDataException("Stocktwits sentiment counts do not add up to messages_analyzed.");
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(_options.RequestTimeout);
+
+                var sentimentStats = await _client.CallAsync(SentimentToolName, stocktwitsSymbol, timeout.Token);
+                EnsureNoToolError(sentimentStats, SentimentToolName);
+
+                var stockStats = await _client.CallAsync(StockStatsToolName, stocktwitsSymbol, timeout.Token);
+                EnsureNoToolError(stockStats, StockStatsToolName);
+
+                var messagesAnalyzed = ReadNonNegativeInteger(sentimentStats, "messages_analyzed");
+                var bullish = ReadNonNegativeInteger(sentimentStats, "bullish");
+                var bearish = ReadNonNegativeInteger(sentimentStats, "bearish");
+                var neutral = ReadNonNegativeInteger(sentimentStats, "neutral");
+                if (bullish + bearish + neutral != messagesAnalyzed)
+                {
+                    throw new InvalidDataException("Stocktwits sentiment counts do not add up to messages_analyzed.");
+                }
+
+                var providerScore = ReadDecimal(sentimentStats, "sentiment_score");
+                if (providerScore is < 0m or > 100m)
+                {
+                    throw new InvalidDataException("Stocktwits sentiment_score must be between 0 and 100.");
+                }
+
+                var sentimentLabel = ReadString(sentimentStats, "sentiment_label");
+                var score = (providerScore - 50m) * 2m;
+                var confidence = Math.Min(100m, messagesAnalyzed * 5m);
+                var fetchedAtUtc = _timeProvider.GetUtcNow();
+                var metadata = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["source_type"] = "stocktwits-mcp",
+                    ["messages_analyzed"] = messagesAnalyzed,
+                    ["bullish"] = bullish,
+                    ["bearish"] = bearish,
+                    ["neutral"] = neutral,
+                    ["sentiment_score"] = providerScore,
+                    ["sentiment_label"] = sentimentLabel,
+                    ["confidence_method"] = "min(messages_analyzed * 5, 100)",
+                    ["stock_stats"] = stockStats,
+                    ["fetched_at_utc"] = fetchedAtUtc
+                };
+
+                var result = new SentimentDataContract
+                {
+                    Ticker = portfolioTicker,
+                    Symbol = stocktwitsSymbol,
+                    Score = score,
+                    Magnitude = Math.Abs(score),
+                    Confidence = confidence,
+                    TimestampUtc = fetchedAtUtc,
+                    Source = "stocktwits",
+                    ProviderName = "stocktwits-mcp",
+                    FreshnessWindow = _options.RefreshInterval,
+                    Metadata = metadata
+                };
+                result.Validate();
+                _cache.Set(
+                    portfolioTicker,
+                    new CachedProviderResult(result, null),
+                    CreateCacheOptions(_options.RefreshInterval));
+                return result;
             }
-
-            var providerScore = ReadDecimal(sentimentStats, "sentiment_score");
-            if (providerScore is < 0m or > 100m)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                throw new InvalidDataException("Stocktwits sentiment_score must be between 0 and 100.");
+                throw;
             }
-
-            var sentimentLabel = ReadString(sentimentStats, "sentiment_label");
-            var score = (providerScore - 50m) * 2m;
-            var confidence = Math.Min(100m, messagesAnalyzed * 5m);
-            var fetchedAtUtc = _timeProvider.GetUtcNow();
-            var metadata = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
+            catch (Exception exception)
             {
-                ["source_type"] = "stocktwits-mcp",
-                ["messages_analyzed"] = messagesAnalyzed,
-                ["bullish"] = bullish,
-                ["bearish"] = bearish,
-                ["neutral"] = neutral,
-                ["sentiment_score"] = providerScore,
-                ["sentiment_label"] = sentimentLabel,
-                ["confidence_method"] = "min(messages_analyzed * 5, 100)",
-                ["stock_stats"] = stockStats,
-                ["fetched_at_utc"] = fetchedAtUtc
-            };
-
-            var result = new SentimentDataContract
-            {
-                Ticker = portfolioTicker,
-                Symbol = stocktwitsSymbol,
-                Score = score,
-                Magnitude = Math.Abs(score),
-                Confidence = confidence,
-                TimestampUtc = fetchedAtUtc,
-                Source = "stocktwits",
-                ProviderName = "stocktwits-mcp",
-                FreshnessWindow = _options.RefreshInterval,
-                Metadata = metadata
-            };
-            result.Validate();
-            _cache[portfolioTicker] = result;
-            return result;
+                _cache.Set(
+                    portfolioTicker,
+                    new CachedProviderResult(null, exception.Message),
+                    CreateCacheOptions(FailedRequestBackoff));
+                throw;
+            }
         }
         finally
         {
             symbolLock.Release();
         }
     }
+
+    public void Dispose()
+    {
+        _cache.Dispose();
+        foreach (var symbolLock in _symbolLocks)
+        {
+            symbolLock.Dispose();
+        }
+    }
+
+    private static MemoryCacheEntryOptions CreateCacheOptions(TimeSpan expiration)
+    {
+        return new MemoryCacheEntryOptions
+        {
+            Size = 1,
+            AbsoluteExpirationRelativeToNow = expiration
+        };
+    }
+
+    private sealed record CachedProviderResult(SentimentDataContract? Data, string? Failure);
 
     private static string NormalizeStocktwitsSymbol(string symbol)
     {

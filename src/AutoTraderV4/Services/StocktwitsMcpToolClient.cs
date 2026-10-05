@@ -9,20 +9,72 @@ public interface IStocktwitsMcpToolClient
     Task<JsonElement> CallAsync(string toolName, string symbol, CancellationToken cancellationToken = default);
 }
 
+public sealed class StocktwitsMcpRequestRateLimiter
+{
+    public const int MaximumRequestsPerHour = 180;
+    private static readonly TimeSpan Window = TimeSpan.FromHours(1);
+
+    private readonly object _sync = new();
+    private readonly Queue<DateTimeOffset> _requestTimes = new();
+    private readonly TimeProvider _timeProvider;
+
+    public StocktwitsMcpRequestRateLimiter(TimeProvider timeProvider)
+    {
+        _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
+    }
+
+    public bool TryAcquire(out TimeSpan retryAfter)
+    {
+        lock (_sync)
+        {
+            var now = _timeProvider.GetUtcNow();
+            while (_requestTimes.TryPeek(out var oldestRequest)
+                && now - oldestRequest >= Window)
+            {
+                _requestTimes.Dequeue();
+            }
+
+            if (_requestTimes.Count >= MaximumRequestsPerHour)
+            {
+                retryAfter = _requestTimes.Peek() + Window - now;
+                return false;
+            }
+
+            _requestTimes.Enqueue(now);
+            retryAfter = TimeSpan.Zero;
+            return true;
+        }
+    }
+}
+
+public sealed class StocktwitsMcpRateLimitException : InvalidOperationException
+{
+    public StocktwitsMcpRateLimitException(TimeSpan retryAfter)
+        : base($"Stocktwits MCP request budget is exhausted; retry after {retryAfter:c}.")
+    {
+        RetryAfter = retryAfter;
+    }
+
+    public TimeSpan RetryAfter { get; }
+}
+
 public sealed class StocktwitsMcpToolClient : IStocktwitsMcpToolClient, IAsyncDisposable
 {
     private readonly StocktwitsMcpOptions _options;
     private readonly ILogger<StocktwitsMcpToolClient> _logger;
+    private readonly StocktwitsMcpRequestRateLimiter _rateLimiter;
     private readonly SemaphoreSlim _connectionLock = new(1, 1);
     private McpClient? _client;
     private Dictionary<string, McpClientTool>? _tools;
 
     public StocktwitsMcpToolClient(
         StocktwitsMcpOptions options,
-        ILogger<StocktwitsMcpToolClient> logger)
+        ILogger<StocktwitsMcpToolClient> logger,
+        StocktwitsMcpRequestRateLimiter rateLimiter)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _rateLimiter = rateLimiter ?? throw new ArgumentNullException(nameof(rateLimiter));
     }
 
     public async Task<JsonElement> CallAsync(
@@ -32,6 +84,10 @@ public sealed class StocktwitsMcpToolClient : IStocktwitsMcpToolClient, IAsyncDi
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
         ArgumentException.ThrowIfNullOrWhiteSpace(symbol);
+        if (!_rateLimiter.TryAcquire(out var retryAfter))
+        {
+            throw new StocktwitsMcpRateLimitException(retryAfter);
+        }
 
         try
         {

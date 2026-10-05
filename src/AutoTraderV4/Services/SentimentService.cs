@@ -87,6 +87,21 @@ public interface IStocktwitsSentimentProvider : ISentimentProvider
 {
 }
 
+public sealed class SentimentRecordWriteGate
+{
+    private readonly SemaphoreSlim _semaphore = new(1, 1);
+
+    public Task WaitAsync(CancellationToken cancellationToken = default)
+    {
+        return _semaphore.WaitAsync(cancellationToken);
+    }
+
+    public void Release()
+    {
+        _semaphore.Release();
+    }
+}
+
 public sealed class DemoSentimentProvider : ISentimentProvider
 {
     public Task<SentimentDataContract?> GetAsync(string symbol, CancellationToken cancellationToken = default)
@@ -160,17 +175,20 @@ public sealed class SentimentService
     private readonly IReadOnlyList<ISentimentProvider> _providers;
     private readonly TimeProvider _timeProvider;
     private readonly StocktwitsMcpOptions? _stocktwitsMcpOptions;
+    private readonly SentimentRecordWriteGate _recordWriteGate;
 
     public SentimentService(
         ApplicationDbContext context,
         IEnumerable<ISentimentProvider>? providers = null,
         TimeProvider? timeProvider = null,
-        StocktwitsMcpOptions? stocktwitsMcpOptions = null)
+        StocktwitsMcpOptions? stocktwitsMcpOptions = null,
+        SentimentRecordWriteGate? recordWriteGate = null)
     {
         _context = context ?? throw new ArgumentNullException(nameof(context));
         _providers = (providers ?? new[] { new DemoSentimentProvider() }).ToList();
         _timeProvider = timeProvider ?? TimeProvider.System;
         _stocktwitsMcpOptions = stocktwitsMcpOptions;
+        _recordWriteGate = recordWriteGate ?? new SentimentRecordWriteGate();
     }
 
     public async Task<SentimentIngestionResult> IngestAsync(string symbol, CancellationToken cancellationToken = default)
@@ -218,34 +236,7 @@ public sealed class SentimentService
                 var freshness = DataFreshnessRules.Evaluate(candidate.TimestampUtc, candidate.FreshnessWindow, reference);
                 if (freshness == DataFreshnessStatus.Fresh)
                 {
-                    var recordTicker = string.IsNullOrWhiteSpace(candidate.Ticker)
-                        ? candidate.NormalizedSymbol.Trim()
-                        : candidate.Ticker.Trim();
-                    var existingRecord = await _context.SentimentRecords
-                        .AsNoTracking()
-                        .Where(record =>
-                            record.Ticker == recordTicker
-                            && record.ProviderName == candidate.ProviderName)
-                        .OrderByDescending(record => record.RecordedAtUtc)
-                        .FirstOrDefaultAsync(cancellationToken);
-
-                    if (existingRecord is not null
-                        && Math.Abs((existingRecord.CreatedUtc - candidate.TimestampUtc).TotalSeconds) <= 1)
-                    {
-                        return new SentimentIngestionResult
-                        {
-                            Success = true,
-                            FreshnessStatus = DataFreshnessStatus.Fresh,
-                            ActiveProvider = candidate.ProviderName,
-                            Data = candidate,
-                            PersistedRecord = existingRecord,
-                            Failures = providerFailures
-                        };
-                    }
-
-                    var record = candidate.ToRecord(reference);
-                    _context.SentimentRecords.Add(record);
-                    await _context.SaveChangesAsync(cancellationToken);
+                    var record = await PersistRecordAsync(candidate, reference, cancellationToken);
 
                     return new SentimentIngestionResult
                     {
@@ -274,9 +265,7 @@ public sealed class SentimentService
         if (bestStaleCandidate is not null)
         {
             var reference = _timeProvider.GetUtcNow();
-            var staleRecord = bestStaleCandidate.ToRecord(reference);
-            _context.SentimentRecords.Add(staleRecord);
-            await _context.SaveChangesAsync(cancellationToken);
+            var staleRecord = await PersistRecordAsync(bestStaleCandidate, reference, cancellationToken);
 
             return new SentimentIngestionResult
             {
@@ -296,5 +285,41 @@ public sealed class SentimentService
             ActiveProvider = "none",
             Failures = providerFailures
         };
+    }
+
+    private async Task<SentimentRecord> PersistRecordAsync(
+        SentimentDataContract candidate,
+        DateTimeOffset referenceTimeUtc,
+        CancellationToken cancellationToken)
+    {
+        await _recordWriteGate.WaitAsync(cancellationToken);
+        try
+        {
+            var recordTicker = string.IsNullOrWhiteSpace(candidate.Ticker)
+                ? candidate.NormalizedSymbol.Trim()
+                : candidate.Ticker.Trim();
+            var existingRecord = await _context.SentimentRecords
+                .AsNoTracking()
+                .Where(record =>
+                    record.Ticker == recordTicker
+                    && record.ProviderName == candidate.ProviderName)
+                .OrderByDescending(record => record.RecordedAtUtc)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (existingRecord is not null
+                && Math.Abs((existingRecord.CreatedUtc - candidate.TimestampUtc).TotalSeconds) <= 1)
+            {
+                return existingRecord;
+            }
+
+            var record = candidate.ToRecord(referenceTimeUtc);
+            _context.SentimentRecords.Add(record);
+            await _context.SaveChangesAsync(cancellationToken);
+            return record;
+        }
+        finally
+        {
+            _recordWriteGate.Release();
+        }
     }
 }

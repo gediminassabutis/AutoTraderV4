@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -286,15 +287,22 @@ public sealed class StockTrackingService
             throw new InvalidOperationException("Stocktwits MCP is enabled but sentiment ingestion is not registered.");
         }
 
-        var tickers = new List<string>();
-        var failures = new List<string>();
-        foreach (var position in positions)
+        var tickers = new ConcurrentBag<string>();
+        var failures = new ConcurrentBag<string>();
+        await Parallel.ForEachAsync(
+            positions,
+            new ParallelOptions
+            {
+                MaxDegreeOfParallelism = 4,
+                CancellationToken = cancellationToken
+            },
+            async (position, cycleCancellationToken) =>
         {
-            var result = await _sentimentService.IngestAsync(position.Ticker, cancellationToken);
+            var result = await _sentimentService.IngestAsync(position.Ticker, cycleCancellationToken);
             if (result.Success && result.FreshnessStatus == DataFreshnessStatus.Fresh)
             {
                 tickers.Add(position.Ticker);
-                continue;
+                return;
             }
 
             var failure = result.Failures.Count > 0
@@ -305,9 +313,11 @@ public sealed class StockTrackingService
                 "Stocktwits sentiment data is unavailable for {Ticker}: {Failure}",
                 position.Ticker,
                 failure);
-        }
+        });
 
-        return (tickers, failures);
+        return (
+            tickers.OrderBy(ticker => ticker, StringComparer.Ordinal).ToArray(),
+            failures.OrderBy(failure => failure, StringComparer.Ordinal).ToArray());
     }
 
     private async Task<(

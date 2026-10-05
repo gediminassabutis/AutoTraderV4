@@ -126,6 +126,8 @@ public partial class Program
         builder.Services.AddScoped<MarketDataService>();
         builder.Services.AddScoped<SentimentService>();
         builder.Services.AddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton<StocktwitsMcpRequestRateLimiter>();
+        builder.Services.AddSingleton<SentimentRecordWriteGate>();
         builder.Services.AddScoped<WeightedStrategyEngineService>();
         builder.Services.AddScoped<PortfolioStateSyncService>(serviceProvider =>
             new PortfolioStateSyncService(

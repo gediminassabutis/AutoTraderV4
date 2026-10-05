@@ -19,6 +19,7 @@ A .NET 10 C# trading automation starter for the Trading 212 Public API, with dem
 - Docker Desktop or a PostgreSQL instance
 - Trading 212 Invest or Stocks ISA API credentials
 - Node.js 18+ when Stocktwits MCP ingestion is enabled
+- Git for Windows/Git Bash when using the default Stocktwits `npx` launcher on Windows
 
 ## Run PostgreSQL locally
 
@@ -82,7 +83,7 @@ dotnet run --project src/AutoTraderV4/AutoTraderV4.csproj --urls http://localhos
 
 The WPF desktop header also has a **Stocktwits MCP** toggle. It reads and updates the running backend's setting using `GET`/`PUT /api/settings/stocktwits-mcp`; a successful change takes effect immediately for the next tracking cycle. The UI toggle is runtime-only: after a backend restart, the setting returns to `StocktwitsMcp:Enabled` from the backend's configuration.
 
-On other platforms, install Node.js 18+ and `npx`, set `StocktwitsMcp__Enabled=true`, and start the app. The default launch command uses `npx` and a pinned Stocktwits server revision; the MCP SDK wraps stdio commands in the Windows command shell as needed. On Windows, Git Bash is detected for the npm prepare script when installed; `StocktwitsMcp__NpmScriptShell` can override its path. `StocktwitsMcp__Command` and `StocktwitsMcp__Arguments__0`, etc. can override the process command and arguments.
+On other platforms, install Node.js 18+ and `npx`, set `StocktwitsMcp__Enabled=true`, and start the app. The default launch command uses `npx` and a pinned Stocktwits server revision. On Windows, the npm prepare script requires Git Bash because it invokes `chmod`; Git Bash is detected automatically, and `StocktwitsMcp__NpmScriptShell` can override its path. Enabling the default `npx` launcher is rejected with a configuration error if no compatible shell is available. A locally built server launched directly with `node` does not require Git Bash. `StocktwitsMcp__Command` and `StocktwitsMcp__Arguments__0`, etc. can override the process command and arguments.
 
 If your npm installation cannot launch a GitHub package directly, clone and build the official server locally, then point the MCP client at its compiled entry point:
 
@@ -99,7 +100,7 @@ $env:StocktwitsMcp__Arguments__0 = Join-Path $mcpPath 'dist\index.js'
 dotnet run --project src\AutoTraderV4\AutoTraderV4.csproj --urls http://localhost:5065
 ```
 
-When enabled, each five-minute tracking cycle ingests Stocktwits stats for held positions, while the provider refreshes each symbol at most every 15 minutes by default. It calls `get_symbol_sentiment` and `get_stock_price`; the message counts, sentiment score/label, quote and fundamental fields, and the complete quote response are persisted in `SentimentRecords.MetadataJson`. The normalized sentiment score and sample-size confidence are persisted in the corresponding scalar columns. MCP quotes are informational only and are not used as executable market prices.
+When enabled, each five-minute tracking cycle ingests Stocktwits stats for held positions, with up to four symbols processed concurrently. The provider refreshes each symbol at most every 15 minutes by default and applies a five-minute per-symbol backoff after failures. A shared per-process sliding-window limiter allows at most 180 MCP tool calls per hour (including both tool calls per symbol refresh), leaving headroom below Stocktwits' 200-requests/hour public API limit. The bounded cache holds up to 512 symbols. It calls `get_symbol_sentiment` and `get_stock_price`; the message counts, sentiment score/label, quote and fundamental fields, and the complete quote response are persisted in `SentimentRecords.MetadataJson`. The normalized sentiment score and sample-size confidence are persisted in the corresponding scalar columns. MCP quotes are informational only and are not used as executable market prices.
 
 Use `POST /api/sentiment/{symbol}/ingest` to ingest a symbol on demand and `GET /api/sentiment/{symbol}` to read its latest persisted record. Both routes accept the portfolio ticker or the normalized Stocktwits symbol.
 

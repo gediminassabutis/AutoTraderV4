@@ -47,6 +47,18 @@ public sealed class StocktwitsMcpOptions
             throw new FileNotFoundException("The configured npm script shell was not found.", NpmScriptShell);
         }
 
+        if (OperatingSystem.IsWindows()
+            && string.Equals(
+                Path.GetFileNameWithoutExtension(Command.Trim()),
+                "npx",
+                StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrWhiteSpace(NpmScriptShell))
+        {
+            throw new ArgumentException(
+                "Git Bash is required to run the Stocktwits npm package on Windows. Install Git for Windows or configure StocktwitsMcp:NpmScriptShell.",
+                nameof(NpmScriptShell));
+        }
+
         if (RefreshIntervalMinutes <= 0)
         {
             throw new ArgumentOutOfRangeException(nameof(RefreshIntervalMinutes), "The refresh interval must be positive.");
