@@ -129,7 +129,8 @@ public sealed class DashboardViewModel : INotifyPropertyChanged
             var result = await _dashboardClient.RunStockTrackingCycleAsync(cancellationToken);
             await LoadAsync(cancellationToken);
 
-            var status = $"Stock tracking completed: {result.UpdatedTickers.Count} prices updated, "
+            var status = $"Stock tracking completed: {result.StockTicksCollected} stock ticks collected across "
+                + $"{result.TrackedStockCount} tracked stocks, {result.UpdatedTickers.Count} held prices updated, "
                 + $"{result.SellRecommendations.Count} sell recommendations, "
                 + $"{result.BuyOpportunities.Count} buy opportunities.";
             var newStockTickers = result.NewStocks
@@ -137,12 +138,11 @@ public sealed class DashboardViewModel : INotifyPropertyChanged
                 .Where(ticker => !string.IsNullOrWhiteSpace(ticker))
                 .Take(5)
                 .ToArray();
-            status += result.NewStocks.Count == 0
-                ? " No new stocks discovered."
-                : $" {result.NewStocks.Count} new stocks discovered: {string.Join(", ", newStockTickers)}"
-                    + (result.NewStocks.Count > newStockTickers.Length
-                        ? $", and {result.NewStocks.Count - newStockTickers.Length} more."
-                        : ".");
+            status += result.NewlyTrackedStockCount == 0
+                ? " No new stocks added to the research universe."
+                : result.NewStocks.Count == 0
+                    ? $" {result.NewlyTrackedStockCount} new stocks added to the research universe."
+                    : $" {result.NewlyTrackedStockCount} new stocks added to the research universe; eligible sample: {string.Join(", ", newStockTickers)}.";
             if (!string.IsNullOrWhiteSpace(result.NewStockDiscoveryError))
             {
                 status += $" New stock discovery failed: {result.NewStockDiscoveryError}";

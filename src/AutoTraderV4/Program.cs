@@ -10,6 +10,21 @@ namespace AutoTraderV4;
 
 public partial class Program
 {
+    private const string EnsureTrackedStocksTableSql = """
+        CREATE TABLE IF NOT EXISTS "TrackedStocks" (
+            "Ticker" character varying(64) NOT NULL,
+            "Name" character varying(256) NOT NULL,
+            "ShortName" character varying(256) NOT NULL,
+            "Isin" character varying(32) NOT NULL,
+            "CurrencyCode" character varying(16) NOT NULL,
+            "InstrumentType" character varying(32) NOT NULL,
+            "AddedOn" timestamp with time zone NULL,
+            "FirstSeenAtUtc" timestamp with time zone NOT NULL,
+            "LastSeenAtUtc" timestamp with time zone NOT NULL,
+            CONSTRAINT "PK_TrackedStocks" PRIMARY KEY ("Ticker")
+        );
+        """;
+
     public static async Task Main(string[] args)
     {
         var builder = WebApplication.CreateBuilder(args);
@@ -182,6 +197,13 @@ public partial class Program
         if (context is not null)
         {
             await context.Database.EnsureCreatedAsync();
+            if (string.Equals(
+                    context.Database.ProviderName,
+                    "Npgsql.EntityFrameworkCore.PostgreSQL",
+                    StringComparison.Ordinal))
+            {
+                await context.Database.ExecuteSqlRawAsync(EnsureTrackedStocksTableSql);
+            }
         }
     }
 

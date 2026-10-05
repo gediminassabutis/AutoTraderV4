@@ -8,6 +8,7 @@ public sealed class ApplicationDbContext : DbContext
     public DbSet<PortfolioPosition> Positions { get; set; }
     public DbSet<PortfolioStateRecord> PortfolioStates { get; set; }
     public DbSet<MarketSnapshot> MarketSnapshots { get; set; }
+    public DbSet<TrackedStock> TrackedStocks { get; set; }
     public DbSet<SentimentRecord> SentimentRecords { get; set; }
     public DbSet<StrategySignalRecord> StrategySignals { get; set; }
     public DbSet<TradeAuditEntry> TradeAuditEntries { get; set; }
@@ -68,6 +69,19 @@ public sealed class ApplicationDbContext : DbContext
             entity.Property(x => x.MetadataJson).IsRequired();
             entity.Property(x => x.LastUpdatedUtc).IsRequired();
             entity.HasIndex(x => new { x.Ticker, x.LastUpdatedUtc });
+        });
+
+        modelBuilder.Entity<TrackedStock>(entity =>
+        {
+            entity.HasKey(x => x.Ticker);
+            entity.Property(x => x.Ticker).IsRequired().HasMaxLength(64);
+            entity.Property(x => x.Name).IsRequired().HasMaxLength(256);
+            entity.Property(x => x.ShortName).IsRequired().HasMaxLength(256);
+            entity.Property(x => x.Isin).IsRequired().HasMaxLength(32);
+            entity.Property(x => x.CurrencyCode).IsRequired().HasMaxLength(16);
+            entity.Property(x => x.InstrumentType).IsRequired().HasMaxLength(32);
+            entity.Property(x => x.FirstSeenAtUtc).IsRequired();
+            entity.Property(x => x.LastSeenAtUtc).IsRequired();
         });
 
         modelBuilder.Entity<SentimentRecord>(entity =>
@@ -189,6 +203,19 @@ public sealed class MarketSnapshot
     public string FreshnessStatus { get; set; } = "Fresh";
     public string MetadataJson { get; set; } = "{}";
     public DateTimeOffset LastUpdatedUtc { get; set; }
+}
+
+public sealed class TrackedStock
+{
+    public string Ticker { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public string ShortName { get; set; } = string.Empty;
+    public string Isin { get; set; } = string.Empty;
+    public string CurrencyCode { get; set; } = string.Empty;
+    public string InstrumentType { get; set; } = "STOCK";
+    public DateTimeOffset? AddedOn { get; set; }
+    public DateTimeOffset FirstSeenAtUtc { get; set; }
+    public DateTimeOffset LastSeenAtUtc { get; set; }
 }
 
 public sealed class SentimentRecord
