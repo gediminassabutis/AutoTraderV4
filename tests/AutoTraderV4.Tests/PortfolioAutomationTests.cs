@@ -78,6 +78,11 @@ public sealed class PortfolioAutomationTests
             return Task.FromResult<PortfolioStateRecord?>(null);
         }
 
+        public Task<List<string>> GetPreviouslyOrderedTickersAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(new List<string>());
+        }
+
         public Task UpsertPositionAsync(PortfolioPosition position, CancellationToken cancellationToken = default)
         {
             throw new NotSupportedException();

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 
 namespace AutoTraderV4.Services;
@@ -8,6 +9,8 @@ public sealed class StockTrackingCycleResult
     public IReadOnlyList<string> UpdatedTickers { get; init; } = [];
     public IReadOnlyList<PortfolioReviewDecision> SellRecommendations { get; init; } = [];
     public IReadOnlyList<BuyOpportunityDecision> BuyOpportunities { get; init; } = [];
+    public IReadOnlyList<Trading212TradableInstrument> NewStocks { get; init; } = [];
+    public string? NewStockDiscoveryError { get; init; }
 }
 
 public sealed class StockTrackingCycleGate : IDisposable
@@ -38,7 +41,12 @@ public sealed class StockTrackingCycleGate : IDisposable
 
 public sealed class StockTrackingService
 {
+    private const int MaximumDiscoveredStocks = 20;
+    private const string StockDiscoveryErrorMessage =
+        "Stock discovery failed. Verify Trading 212 API credentials and metadata access.";
+
     private readonly IPortfolioRepository _repository;
+    private readonly ITrading212Client _trading212Client;
     private readonly PortfolioStateSyncService _portfolioStateSyncService;
     private readonly MarketDataService _marketDataService;
     private readonly PortfolioReviewService _portfolioReviewService;
@@ -48,6 +56,7 @@ public sealed class StockTrackingService
 
     public StockTrackingService(
         IPortfolioRepository repository,
+        ITrading212Client trading212Client,
         PortfolioStateSyncService portfolioStateSyncService,
         MarketDataService marketDataService,
         PortfolioReviewService portfolioReviewService,
@@ -56,6 +65,7 @@ public sealed class StockTrackingService
         StockTrackingCycleGate cycleGate)
     {
         _repository = repository ?? throw new ArgumentNullException(nameof(repository));
+        _trading212Client = trading212Client ?? throw new ArgumentNullException(nameof(trading212Client));
         _portfolioStateSyncService = portfolioStateSyncService ?? throw new ArgumentNullException(nameof(portfolioStateSyncService));
         _marketDataService = marketDataService ?? throw new ArgumentNullException(nameof(marketDataService));
         _portfolioReviewService = portfolioReviewService ?? throw new ArgumentNullException(nameof(portfolioReviewService));
@@ -74,6 +84,7 @@ public sealed class StockTrackingService
         await _portfolioStateSyncService.EnsureFreshAsync(cancellationToken);
         var marketDataReadiness = _marketDataService.GetReadiness();
         var positions = await _repository.GetAllPositionsAsync(cancellationToken);
+        var stockDiscovery = await DiscoverNewStocksAsync(positions, cancellationToken);
         if (!marketDataReadiness.LiveProviderConfigured)
         {
             _logger.LogWarning(
@@ -83,7 +94,9 @@ public sealed class StockTrackingService
             return new StockTrackingCycleResult
             {
                 MarketDataReadiness = marketDataReadiness,
-                SellRecommendations = await _portfolioReviewService.ReviewOpenPositionsAsync(cancellationToken)
+                SellRecommendations = await _portfolioReviewService.ReviewOpenPositionsAsync(cancellationToken),
+                NewStocks = stockDiscovery.Stocks,
+                NewStockDiscoveryError = stockDiscovery.Error
             };
         }
 
@@ -135,7 +148,71 @@ public sealed class StockTrackingService
             MarketDataReadiness = marketDataReadiness,
             UpdatedTickers = updatedTickers,
             SellRecommendations = sellRecommendations,
-            BuyOpportunities = buyOpportunities
+            BuyOpportunities = buyOpportunities,
+            NewStocks = stockDiscovery.Stocks,
+            NewStockDiscoveryError = stockDiscovery.Error
         };
+    }
+
+    private async Task<(IReadOnlyList<Trading212TradableInstrument> Stocks, string? Error)> DiscoverNewStocksAsync(
+        IReadOnlyCollection<PortfolioPosition> positions,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyList<Trading212TradableInstrument> instruments;
+        try
+        {
+            instruments = await _trading212Client.GetAvailableInstrumentsAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (
+            exception is HttpRequestException
+                or JsonException
+                or InvalidOperationException
+                or IOException
+                or OperationCanceledException)
+        {
+            _logger.LogWarning(exception, "Stock discovery failed. Verify Trading 212 metadata access.");
+            return ([], StockDiscoveryErrorMessage);
+        }
+
+        var alreadyOrderedTickers = new HashSet<string>(
+            positions.Select(position => NormalizeTicker(position.Ticker)),
+            StringComparer.OrdinalIgnoreCase);
+        alreadyOrderedTickers.UnionWith(
+            (await _repository.GetPreviouslyOrderedTickersAsync(cancellationToken))
+                .Select(NormalizeTicker));
+
+        var stocks = instruments
+            .Where(instrument => string.Equals(instrument.Type, "STOCK", StringComparison.OrdinalIgnoreCase))
+            .Where(instrument => !string.IsNullOrWhiteSpace(instrument.Ticker))
+            .Where(instrument => !alreadyOrderedTickers.Contains(NormalizeTicker(instrument.Ticker)))
+            .GroupBy(instrument => instrument.Ticker.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(group => group
+                .OrderByDescending(instrument => instrument.AddedOn ?? DateTimeOffset.MinValue)
+                .ThenBy(instrument => instrument.Name, StringComparer.OrdinalIgnoreCase)
+                .First())
+            .OrderByDescending(instrument => instrument.AddedOn ?? DateTimeOffset.MinValue)
+            .ThenBy(instrument => instrument.Name, StringComparer.OrdinalIgnoreCase)
+            .Take(MaximumDiscoveredStocks)
+            .ToArray();
+
+        return (stocks, null);
+    }
+
+    private static string NormalizeTicker(string? ticker)
+    {
+        if (string.IsNullOrWhiteSpace(ticker))
+        {
+            return string.Empty;
+        }
+
+        var normalizedTicker = ticker.Trim().ToUpperInvariant();
+        var marketSuffixSeparator = normalizedTicker.IndexOf('_');
+        return marketSuffixSeparator > 0
+            ? normalizedTicker[..marketSuffixSeparator]
+            : normalizedTicker;
     }
 }

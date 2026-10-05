@@ -481,6 +481,14 @@ public sealed class PortfolioAutomationBackgroundService : BackgroundService
         var stockTrackingService = scope.ServiceProvider.GetRequiredService<StockTrackingService>();
         var cycleResult = await stockTrackingService.RunCycleAsync(cancellationToken);
 
+        if (cycleResult.NewStocks.Count > 0)
+        {
+            _logger.LogInformation(
+                "Stock tracker discovered {Count} untraded stocks: {Tickers}.",
+                cycleResult.NewStocks.Count,
+                string.Join(", ", cycleResult.NewStocks.Select(stock => stock.Ticker)));
+        }
+
         foreach (var ticker in cycleResult.UpdatedTickers)
         {
             _logger.LogDebug("Updated the current market tick for {Ticker}.", ticker);

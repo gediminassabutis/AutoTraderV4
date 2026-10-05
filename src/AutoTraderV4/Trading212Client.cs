@@ -8,6 +8,7 @@ public interface ITrading212Client
 {
     Task<Trading212AccountSummary> GetAccountSummaryAsync(CancellationToken cancellationToken = default);
     Task<IReadOnlyList<Trading212Position>> GetPositionsAsync(CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<Trading212TradableInstrument>> GetAvailableInstrumentsAsync(CancellationToken cancellationToken = default);
     Task<Trading212OrderResult> PlaceOrderAsync(Trading212OrderRequest order, CancellationToken cancellationToken = default);
 }
 
@@ -39,6 +40,11 @@ public sealed class DemoTrading212Client : ITrading212Client
     public Task<IReadOnlyList<Trading212Position>> GetPositionsAsync(CancellationToken cancellationToken = default)
     {
         return Task.FromResult<IReadOnlyList<Trading212Position>>([]);
+    }
+
+    public Task<IReadOnlyList<Trading212TradableInstrument>> GetAvailableInstrumentsAsync(CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult<IReadOnlyList<Trading212TradableInstrument>>([]);
     }
 
     public Task<Trading212OrderResult> PlaceOrderAsync(Trading212OrderRequest order, CancellationToken cancellationToken = default)
@@ -183,6 +189,16 @@ public sealed class Trading212Client : ITrading212Client
         var json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
         return JsonSerializer.Deserialize<List<Trading212Position>>(json, JsonOptions.Default)
             ?? throw new InvalidOperationException("Positions payload was empty.");
+    }
+
+    public async Task<IReadOnlyList<Trading212TradableInstrument>> GetAvailableInstrumentsAsync(CancellationToken cancellationToken = default)
+    {
+        using var response = await _httpClient.GetAsync("equity/metadata/instruments", cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+
+        var json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        return JsonSerializer.Deserialize<List<Trading212TradableInstrument>>(json, JsonOptions.Default)
+            ?? throw new InvalidOperationException("Available instruments payload was empty.");
     }
 
     public async Task<Trading212OrderResult> PlaceOrderAsync(Trading212OrderRequest order, CancellationToken cancellationToken = default)

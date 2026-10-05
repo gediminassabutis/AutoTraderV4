@@ -132,6 +132,22 @@ public sealed class DashboardViewModel : INotifyPropertyChanged
             var status = $"Stock tracking completed: {result.UpdatedTickers.Count} prices updated, "
                 + $"{result.SellRecommendations.Count} sell recommendations, "
                 + $"{result.BuyOpportunities.Count} buy opportunities.";
+            var newStockTickers = result.NewStocks
+                .Select(stock => stock.Ticker)
+                .Where(ticker => !string.IsNullOrWhiteSpace(ticker))
+                .Take(5)
+                .ToArray();
+            status += result.NewStocks.Count == 0
+                ? " No new stocks discovered."
+                : $" {result.NewStocks.Count} new stocks discovered: {string.Join(", ", newStockTickers)}"
+                    + (result.NewStocks.Count > newStockTickers.Length
+                        ? $", and {result.NewStocks.Count - newStockTickers.Length} more."
+                        : ".");
+            if (!string.IsNullOrWhiteSpace(result.NewStockDiscoveryError))
+            {
+                status += $" New stock discovery failed: {result.NewStockDiscoveryError}";
+            }
+
             if (!result.MarketDataReadiness.LiveProviderConfigured
                 && !string.IsNullOrWhiteSpace(result.MarketDataReadiness.Message))
             {

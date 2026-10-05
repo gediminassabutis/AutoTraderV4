@@ -100,6 +100,11 @@ public sealed class TestWebApplication : IAsyncDisposable
             return Task.FromResult<IReadOnlyList<Trading212Position>>([]);
         }
 
+        public Task<IReadOnlyList<Trading212TradableInstrument>> GetAvailableInstrumentsAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<IReadOnlyList<Trading212TradableInstrument>>([]);
+        }
+
         public Task<Trading212OrderResult> PlaceOrderAsync(Trading212OrderRequest order, CancellationToken cancellationToken = default)
         {
             return Task.FromResult(new Trading212OrderResult

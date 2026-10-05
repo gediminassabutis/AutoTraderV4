@@ -87,6 +87,8 @@ public sealed class StockTrackingCycleResult
     public List<string> UpdatedTickers { get; set; } = [];
     public List<StockTrackingTickerResult> SellRecommendations { get; set; } = [];
     public List<StockTrackingTickerResult> BuyOpportunities { get; set; } = [];
+    public List<StockTrackingNewStockResult> NewStocks { get; set; } = [];
+    public string? NewStockDiscoveryError { get; set; }
 }
 
 public sealed class MarketDataReadinessView
@@ -98,4 +100,15 @@ public sealed class MarketDataReadinessView
 public sealed class StockTrackingTickerResult
 {
     public string Ticker { get; set; } = string.Empty;
+}
+
+public sealed class StockTrackingNewStockResult
+{
+    public DateTimeOffset? AddedOn { get; set; }
+    public string CurrencyCode { get; set; } = string.Empty;
+    public string Isin { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public string ShortName { get; set; } = string.Empty;
+    public string Ticker { get; set; } = string.Empty;
+    public string Type { get; set; } = string.Empty;
 }

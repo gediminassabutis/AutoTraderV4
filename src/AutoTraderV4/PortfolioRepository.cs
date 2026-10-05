@@ -5,6 +5,7 @@ namespace AutoTraderV4;
 public interface IPortfolioRepository
 {
     Task<List<PortfolioPosition>> GetAllPositionsAsync(CancellationToken cancellationToken = default);
+    Task<List<string>> GetPreviouslyOrderedTickersAsync(CancellationToken cancellationToken = default);
     Task<PortfolioStateRecord?> GetPortfolioStateAsync(CancellationToken cancellationToken = default);
     Task UpsertPositionAsync(PortfolioPosition position, CancellationToken cancellationToken = default);
     Task UpsertPortfolioStateAsync(PortfolioStateRecord state, CancellationToken cancellationToken = default);
@@ -28,6 +29,24 @@ public sealed class PortfolioRepository : IPortfolioRepository
         return await _context.Positions
             .AsNoTracking()
             .OrderBy(x => x.Ticker)
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task<List<string>> GetPreviouslyOrderedTickersAsync(CancellationToken cancellationToken = default)
+    {
+        var orderStatuses = new[]
+        {
+            OrderExecutionStatus.Submitted.ToString(),
+            OrderExecutionStatus.Accepted.ToString(),
+            OrderExecutionStatus.Filled.ToString(),
+            OrderExecutionStatus.Closed.ToString()
+        };
+
+        return await _context.OrderExecutionRecords
+            .AsNoTracking()
+            .Where(record => orderStatuses.Contains(record.Status))
+            .Select(record => record.Ticker)
+            .Distinct()
             .ToListAsync(cancellationToken);
     }
 
