@@ -36,6 +36,21 @@ public class ApiIntegrationTests
     }
 
     [Fact]
+    public async Task MarketDataStatusEndpoint_ExposesSyntheticProvidersAsNonActionable()
+    {
+        await using var app = await TestWebApplication.CreateAsync();
+
+        using var response = await app.Client.GetAsync("/api/market-data/status");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(payload.GetProperty("liveProviderConfigured").GetBoolean());
+        Assert.Equal("non-actionable", payload.GetProperty("mode").GetString());
+        Assert.Contains("synthetic", payload.GetProperty("message").GetString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, payload.GetProperty("liveProviders").GetArrayLength());
+    }
+
+    [Fact]
     public async Task PositionsEndpoint_ReturnsPersistedPositionsInTickerOrder()
     {
         await using var app = await TestWebApplication.CreateAsync(context =>
@@ -236,6 +251,13 @@ public class ApiIntegrationTests
         Assert.True(payload.GetProperty("growthCurve").GetArrayLength() >= 1);
         Assert.True(payload.GetProperty("allocation").GetArrayLength() >= 1);
         Assert.Equal("S&P 500", payload.GetProperty("marketOverview")[0].GetProperty("label").GetString());
+        var dataSourceAlert = payload.GetProperty("alerts")
+            .EnumerateArray()
+            .Single(alert => alert.GetProperty("title").GetString() == "API/Data Source Issue");
+        Assert.Contains(
+            "non-actionable",
+            dataSourceAlert.GetProperty("message").GetString(),
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

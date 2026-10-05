@@ -65,7 +65,9 @@ On startup, the app creates the EF schema when the configured database is empty.
 
 The app falls back to demo data automatically when `Trading212:UseDemoData` is `true` or when the API key/secret are left blank. This keeps the dashboard working on a clean machine without a live Trading 212 subscription.
 
-On startup, the app begins a five-minute review loop that computes sell triggers and scans buy candidates. It logs recommendations only; broker order submission is intentionally disabled until authenticated execution, verified market data, and complete risk telemetry are available.
+On startup, the app begins a five-minute stock-tracking cycle. It refreshes prices for held positions, stores timestamped market snapshots, updates each position's current price only from fresh non-synthetic data, and screens recent strategy buy signals for unheld stocks. Strategy price deltas are normalized against the fresh quote before scoring, and recommendations require fresh measured liquidity and spread, a classified sector, and portfolio risk approval including exposure reserved by earlier recommendations in the same scan. The service logs recommendations only; broker order submission is intentionally disabled until authenticated execution and complete risk telemetry are available.
+
+The built-in demo and fallback market-data providers return synthetic quotes. These quotes are explicitly non-actionable: the tracker will not update current ticks or generate buy recommendations until an `IMarketDataProvider` that advertises live data and returns fresh, measured, non-synthetic prices, liquidity, spread, and sector metadata is configured. The current readiness is available at `GET /api/market-data/status` and as an API/data-source alert on the dashboard.
 
 For test-only runs without a PostgreSQL instance, set the app to use EF Core's in-memory database:
 
@@ -122,6 +124,7 @@ The automated suite now includes:
 - `GET /api/dashboard`
 - `GET /api/dashboard/summary`
 - `GET /api/watchlist`
+- `GET /api/market-data/status`
 - `GET /api/risk/summary`
 - `GET /api/portfolio`
 - `GET /api/portfolio/review`

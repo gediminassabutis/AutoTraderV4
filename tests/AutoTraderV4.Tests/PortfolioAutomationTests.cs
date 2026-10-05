@@ -34,6 +34,7 @@ public sealed class PortfolioAutomationTests
         services.AddScoped<IPortfolioDashboardService, PortfolioDashboardService>();
         services.AddScoped<PortfolioReviewService>();
         services.AddScoped<BuyOpportunityService>();
+        services.AddScoped<StockTrackingService>();
 
         await using var provider = services.BuildServiceProvider();
         var worker = new PortfolioAutomationBackgroundService(
@@ -67,12 +68,12 @@ public sealed class PortfolioAutomationTests
                 throw new InvalidOperationException("Simulated transient repository failure.");
             }
 
+            SecondCycleReached.TrySetResult(true);
             return Task.FromResult(new List<PortfolioPosition>());
         }
 
         public Task<PortfolioStateRecord?> GetPortfolioStateAsync(CancellationToken cancellationToken = default)
         {
-            SecondCycleReached.TrySetResult(true);
             return Task.FromResult<PortfolioStateRecord?>(null);
         }
 

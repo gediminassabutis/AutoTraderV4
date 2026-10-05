@@ -141,13 +141,26 @@ public sealed class MarketDataIngestionResult
     public List<string> Failures { get; init; } = [];
 }
 
+public sealed class MarketDataReadiness
+{
+    public bool LiveProviderConfigured { get; init; }
+    public string Mode { get; init; } = "non-actionable";
+    public string Message { get; init; } = string.Empty;
+    public IReadOnlyList<string> ConfiguredProviders { get; init; } = [];
+    public IReadOnlyList<string> LiveProviders { get; init; } = [];
+}
+
 public interface IMarketDataProvider
 {
+    bool SupportsLiveData => false;
+
     Task<MarketDataContract?> GetAsync(string symbol, CancellationToken cancellationToken = default);
 }
 
 public sealed class DemoMarketDataProvider : IMarketDataProvider
 {
+    public bool SupportsLiveData => false;
+
     public Task<MarketDataContract?> GetAsync(string symbol, CancellationToken cancellationToken = default)
     {
         var normalized = (symbol ?? string.Empty).Trim();
@@ -185,6 +198,8 @@ public sealed class DemoMarketDataProvider : IMarketDataProvider
 
 public sealed class FallbackMarketDataProvider : IMarketDataProvider
 {
+    public bool SupportsLiveData => false;
+
     public Task<MarketDataContract?> GetAsync(string symbol, CancellationToken cancellationToken = default)
     {
         var normalized = (symbol ?? string.Empty).Trim();
@@ -235,6 +250,31 @@ public sealed class MarketDataService
         _context = context ?? throw new ArgumentNullException(nameof(context));
         _providers = (providers ?? new[] { new DemoMarketDataProvider() }).ToList();
         _timeProvider = timeProvider ?? TimeProvider.System;
+    }
+
+    public MarketDataReadiness GetReadiness()
+    {
+        var configuredProviders = _providers
+            .Select(provider => provider.GetType().Name)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        var liveProviders = _providers
+            .Where(provider => provider.SupportsLiveData)
+            .Select(provider => provider.GetType().Name)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        var liveProviderConfigured = liveProviders.Length > 0;
+
+        return new MarketDataReadiness
+        {
+            LiveProviderConfigured = liveProviderConfigured,
+            Mode = liveProviderConfigured ? "live" : "non-actionable",
+            Message = liveProviderConfigured
+                ? "A live market-data provider is configured. Only fresh, non-synthetic quotes are actionable."
+                : "No live market-data provider is configured. Demo and fallback quotes are synthetic and non-actionable; price updates and buy recommendations are disabled.",
+            ConfiguredProviders = configuredProviders,
+            LiveProviders = liveProviders
+        };
     }
 
     public async Task<MarketDataIngestionResult> IngestAsync(string symbol, CancellationToken cancellationToken = default)

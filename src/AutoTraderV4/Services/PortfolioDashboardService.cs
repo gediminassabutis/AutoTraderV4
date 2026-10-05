@@ -152,13 +152,16 @@ public sealed class PortfolioDashboardService : IPortfolioDashboardService
 
     private readonly ApplicationDbContext _context;
     private readonly PortfolioStateSyncService _portfolioStateSyncService;
+    private readonly MarketDataService _marketDataService;
 
     public PortfolioDashboardService(
         ApplicationDbContext context,
-        PortfolioStateSyncService portfolioStateSyncService)
+        PortfolioStateSyncService portfolioStateSyncService,
+        MarketDataService marketDataService)
     {
         _context = context ?? throw new ArgumentNullException(nameof(context));
         _portfolioStateSyncService = portfolioStateSyncService ?? throw new ArgumentNullException(nameof(portfolioStateSyncService));
+        _marketDataService = marketDataService ?? throw new ArgumentNullException(nameof(marketDataService));
     }
 
     public async Task<PortfolioSummary> GetSummaryAsync(CancellationToken cancellationToken = default)
@@ -185,7 +188,13 @@ public sealed class PortfolioDashboardService : IPortfolioDashboardService
             .Take(20)
             .ToList();
         var marketOverview = BuildMarketOverview(dashboardContext.SnapshotsByTicker).ToList();
-        var alerts = BuildAlerts(positions, watchlist, dashboardContext.Snapshots, dashboardContext.Signals).ToList();
+        var alerts = BuildAlerts(
+                positions,
+                watchlist,
+                dashboardContext.Snapshots,
+                dashboardContext.Signals,
+                _marketDataService.GetReadiness())
+            .ToList();
 
         return new PortfolioDashboard
         {
@@ -297,7 +306,7 @@ public sealed class PortfolioDashboardService : IPortfolioDashboardService
             .Select(item =>
             {
                 latestSignalsByTicker.TryGetValue(item.Position.Ticker, out var latestSignal);
-                int? confidence = latestSignal is null ? null : CalculateConfidence(latestSignal.Signal);
+                int? confidence = latestSignal is null ? null : StrategySignalScoring.CalculateConfidence(latestSignal.Signal);
                 decimal? stopLoss = item.Position.StopLoss > 0m ? RoundTo2(item.Position.StopLoss) : null;
                 decimal? takeProfit = item.Position.TakeProfit > 0m ? RoundTo2(item.Position.TakeProfit) : null;
                 var unrealizedPnl = (item.CurrentPrice - item.Position.AveragePrice) * item.Position.Quantity;
@@ -312,7 +321,9 @@ public sealed class PortfolioDashboardService : IPortfolioDashboardService
                     StopLoss = stopLoss,
                     TakeProfit = takeProfit,
                     Confidence = confidence,
-                    Sector = InferSector(item.Position.Ticker),
+                    Sector = SectorClassification.Resolve(
+                        item.Position.Ticker,
+                        persistedSector: item.Position.Sector) ?? SectorClassification.Unclassified,
                     Currency = item.Position.Currency,
                     AllocationPercent = totalMarketValue > 0m
                         ? RoundTo2((item.MarketValue / totalMarketValue) * 100m)
@@ -335,15 +346,17 @@ public sealed class PortfolioDashboardService : IPortfolioDashboardService
     {
         return signals
             .GroupBy(signal => signal.Ticker, StringComparer.OrdinalIgnoreCase)
-            .Where(group => latestSnapshotsByTicker.ContainsKey(group.Key))
+            .Where(group =>
+                latestSnapshotsByTicker.TryGetValue(group.Key, out var snapshot)
+                && snapshot.Price > 0m)
             .Select(group =>
             {
                 var latestSignal = group.OrderByDescending(signal => signal.CreatedUtc).First();
-                var signedScore = CalculateSignedScore(latestSignal.Signal);
-                var confidence = CalculateConfidence(latestSignal.Signal);
-                var latestPrice = latestSnapshotsByTicker.TryGetValue(latestSignal.Ticker, out var snapshot)
-                    ? snapshot.Price
-                    : 0m;
+                var latestSnapshot = latestSnapshotsByTicker[group.Key];
+                var latestPrice = latestSnapshot.Price;
+                var normalizedSignal = StrategySignalScoring.NormalizePriceDelta(latestSignal.Signal, latestPrice);
+                var signedScore = StrategySignalScoring.CalculateSignedScore(normalizedSignal);
+                var confidence = StrategySignalScoring.CalculateConfidence(normalizedSignal);
                 var volatility = snapshotsByTicker.TryGetValue(latestSignal.Ticker, out var tickerSnapshots)
                     ? CalculateVolatilityPercent(tickerSnapshots)
                     : 0m;
@@ -351,15 +364,15 @@ public sealed class PortfolioDashboardService : IPortfolioDashboardService
                 return new WatchlistOpportunity
                 {
                     Symbol = latestSignal.Ticker,
-                    Rating = GetRating(signedScore),
+                    Rating = StrategySignalScoring.GetRating(signedScore),
                     Confidence = confidence,
-                    ForecastReturn = RoundTo2(latestSignal.Signal * 8m),
+                    ForecastReturn = RoundTo2(normalizedSignal * 8m),
                     RiskScore = RoundTo2(Math.Min(100m, 20m + volatility)),
                     Price = RoundTo2(latestPrice),
                     IsSynthetic = false,
-                    Sector = InferSector(latestSignal.Ticker),
-                    Strategy = ChooseStrategy(latestSignal.Signal, volatility),
-                    TopFactors = BuildTopFactors(latestSignal.Signal, volatility),
+                    Sector = SectorClassification.Resolve(latestSignal.Ticker) ?? SectorClassification.Unclassified,
+                    Strategy = ChooseStrategy(normalizedSignal, volatility),
+                    TopFactors = BuildTopFactors(normalizedSignal, volatility),
                     LastUpdatedUtc = latestSignal.CreatedUtc
                 };
             })
@@ -442,25 +455,40 @@ public sealed class PortfolioDashboardService : IPortfolioDashboardService
         IReadOnlyCollection<PortfolioPositionView> positions,
         IReadOnlyCollection<WatchlistOpportunity> watchlist,
         IReadOnlyCollection<MarketSnapshot> snapshots,
-        IReadOnlyCollection<StrategySignalRecord> signals)
+        IReadOnlyCollection<StrategySignalRecord> signals,
+        MarketDataReadiness marketDataReadiness)
     {
         var now = DateTimeOffset.UtcNow;
         var alerts = new List<DashboardAlert>();
 
-        var staleCutoff = now.AddMinutes(-15);
-        var latestSnapshot = snapshots.OrderByDescending(snapshot => snapshot.LastUpdatedUtc).FirstOrDefault();
-        if (latestSnapshot is null || latestSnapshot.LastUpdatedUtc < staleCutoff)
+        if (!marketDataReadiness.LiveProviderConfigured)
         {
             alerts.Add(new DashboardAlert
             {
                 Title = "API/Data Source Issue",
-                Message = latestSnapshot is null
-                    ? "No market snapshots are available yet. Awaiting the first market data refresh."
-                    : $"Latest market snapshot is stale from {latestSnapshot.LastUpdatedUtc:u}.",
+                Message = marketDataReadiness.Message,
                 Type = "data",
                 Severity = "warning",
-                TimeUtc = latestSnapshot?.LastUpdatedUtc ?? now
+                TimeUtc = now
             });
+        }
+        else
+        {
+            var staleCutoff = now.AddMinutes(-15);
+            var latestSnapshot = snapshots.OrderByDescending(snapshot => snapshot.LastUpdatedUtc).FirstOrDefault();
+            if (latestSnapshot is null || latestSnapshot.LastUpdatedUtc < staleCutoff)
+            {
+                alerts.Add(new DashboardAlert
+                {
+                    Title = "API/Data Source Issue",
+                    Message = latestSnapshot is null
+                        ? "No market snapshots are available yet. Awaiting the first market data refresh."
+                        : $"Latest market snapshot is stale from {latestSnapshot.LastUpdatedUtc:u}.",
+                    Type = "data",
+                    Severity = "warning",
+                    TimeUtc = latestSnapshot?.LastUpdatedUtc ?? now
+                });
+            }
         }
 
         foreach (var position in positions.Where(position => position.CurrentPrice > 0m))
@@ -772,30 +800,6 @@ public sealed class PortfolioDashboardService : IPortfolioDashboardService
         return RoundTo2(worstDrawdown);
     }
 
-    private static int CalculateConfidence(decimal signal)
-    {
-        var confidence = 50m + Math.Min(45m, Math.Abs(signal) * 30m);
-        return (int)Math.Round(confidence, MidpointRounding.AwayFromZero);
-    }
-
-    private static int CalculateSignedScore(decimal signal)
-    {
-        var signedScore = 50m + (signal * 25m);
-        return (int)Math.Clamp(Math.Round(signedScore, MidpointRounding.AwayFromZero), 0m, 100m);
-    }
-
-    private static string GetRating(int score)
-    {
-        return score switch
-        {
-            < 40 => "Strong Sell",
-            < 55 => "Sell",
-            < 65 => "Hold",
-            < 80 => "Buy",
-            _ => "Strong Buy"
-        };
-    }
-
     private static decimal CalculateVolatilityPercent(IReadOnlyList<MarketSnapshot> snapshots)
     {
         if (snapshots.Count < 2)
@@ -866,22 +870,6 @@ public sealed class PortfolioDashboardService : IPortfolioDashboardService
             "30D" => 1m,
             "90D" => 1.4m,
             _ => 1m
-        };
-    }
-
-    private static string InferSector(string symbol)
-    {
-        var normalized = symbol.Split('_')[0].ToUpperInvariant();
-
-        return normalized switch
-        {
-            "NVDA" or "MSFT" or "AAPL" or "AMD" or "META" or "GOOGL" => "Technology",
-            "V" or "MA" or "JPM" or "GS" => "Financials",
-            "LLY" or "JNJ" or "PFE" => "Healthcare",
-            "XOM" or "CVX" => "Energy",
-            "PG" or "KO" or "PEP" => "Consumer",
-            "SPX" or "^GSPC" or "IXIC" or "^IXIC" or "DJI" or "^DJI" or "FTSE" or "^FTSE" or "VIX" or "^VIX" => "Market",
-            _ => "Unclassified"
         };
     }
 
