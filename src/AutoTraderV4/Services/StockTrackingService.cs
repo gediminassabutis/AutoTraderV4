@@ -189,7 +189,7 @@ public sealed class StockTrackingService
             .Where(instrument => string.Equals(instrument.Type, "STOCK", StringComparison.OrdinalIgnoreCase))
             .Where(instrument => !string.IsNullOrWhiteSpace(instrument.Ticker))
             .Where(instrument => !alreadyOrderedTickers.Contains(NormalizeTicker(instrument.Ticker)))
-            .GroupBy(instrument => NormalizeTicker(instrument.Ticker), StringComparer.OrdinalIgnoreCase)
+            .GroupBy(instrument => instrument.Ticker.Trim(), StringComparer.OrdinalIgnoreCase)
             .Select(group => group
                 .OrderByDescending(instrument => instrument.AddedOn ?? DateTimeOffset.MinValue)
                 .ThenBy(instrument => instrument.Name, StringComparer.OrdinalIgnoreCase)

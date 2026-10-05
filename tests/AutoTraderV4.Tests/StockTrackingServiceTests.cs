@@ -140,10 +140,24 @@ public sealed class StockTrackingServiceTests
             },
             new Trading212TradableInstrument
             {
+                Ticker = "AAPL_US_EQ",
+                Name = "Apple Inc. (US)",
+                Type = "STOCK",
+                AddedOn = now.AddSeconds(-5)
+            },
+            new Trading212TradableInstrument
+            {
+                Ticker = "AAPL_GB_EQ",
+                Name = "Apple Inc. (UK)",
+                Type = "STOCK",
+                AddedOn = now.AddSeconds(-6)
+            },
+            new Trading212TradableInstrument
+            {
                 Ticker = "VTI_US_EQ",
                 Name = "Vanguard Total Stock Market ETF",
                 Type = "ETF",
-                AddedOn = now.AddSeconds(-5)
+                AddedOn = now.AddSeconds(-7)
             }
         ]);
         var portfolioSync = new PortfolioStateSyncService(
@@ -200,7 +214,7 @@ public sealed class StockTrackingServiceTests
         Assert.Equal("NVDA", Assert.Single(result.BuyOpportunities).Ticker);
         Assert.Equal(86m, result.BuyOpportunities[0].ConfidenceScore);
         Assert.Equal(
-            new[] { "NVDA_US_EQ", "TSLA_US_EQ", "AMD_US_EQ", "ZZZZ_US_EQ" },
+            new[] { "NVDA_US_EQ", "TSLA_US_EQ", "AMD_US_EQ", "ZZZZ_US_EQ", "AAPL_US_EQ", "AAPL_GB_EQ" },
             result.NewStocks.Select(stock => stock.Ticker));
         Assert.Null(result.NewStockDiscoveryError);
         Assert.Equal(4, await context.MarketSnapshots.CountAsync());
