@@ -143,6 +143,15 @@ public sealed class DashboardViewModel : INotifyPropertyChanged
                 : result.NewStocks.Count == 0
                     ? $" {result.NewlyTrackedStockCount} new stocks added to the research universe."
                     : $" {result.NewlyTrackedStockCount} new stocks added to the research universe; eligible sample: {string.Join(", ", newStockTickers)}.";
+            if (result.DeferredStockTickCount > 0)
+            {
+                status += !result.MarketDataReadiness.LiveProviderConfigured
+                    ? $" {result.DeferredStockTickCount} stock ticks are waiting for a live provider."
+                    : result.StockTickCollectionBudgetExhausted
+                        ? $" The collection time budget was reached; {result.DeferredStockTickCount} stocks will resume next cycle."
+                        : $" {result.DeferredStockTickCount} stocks are deferred to later cycles by the batch limit.";
+            }
+
             if (!string.IsNullOrWhiteSpace(result.NewStockDiscoveryError))
             {
                 status += $" New stock discovery failed: {result.NewStockDiscoveryError}";

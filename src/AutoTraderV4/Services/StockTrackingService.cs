@@ -11,6 +11,8 @@ public sealed class StockTrackingCycleResult
     public int TrackedStockCount { get; init; }
     public int NewlyTrackedStockCount { get; init; }
     public int StockTicksCollected { get; init; }
+    public int DeferredStockTickCount { get; init; }
+    public bool StockTickCollectionBudgetExhausted { get; init; }
     public IReadOnlyList<PortfolioReviewDecision> SellRecommendations { get; init; } = [];
     public IReadOnlyList<BuyOpportunityDecision> BuyOpportunities { get; init; } = [];
     public IReadOnlyList<Trading212TradableInstrument> NewStocks { get; init; } = [];
@@ -46,6 +48,9 @@ public sealed class StockTrackingCycleGate : IDisposable
 public sealed class StockTrackingService
 {
     private const int MaximumReportedNewStocks = 20;
+    private const int MaximumStockTicksPerCycle = 100;
+    private static readonly TimeSpan TrackedStockLastSeenRefreshInterval = TimeSpan.FromHours(1);
+    private static readonly TimeSpan MaximumStockTickCollectionDuration = TimeSpan.FromSeconds(45);
     private const string StockDiscoveryErrorMessage =
         "Stock discovery failed. Verify Trading 212 API credentials and metadata access.";
 
@@ -90,46 +95,85 @@ public sealed class StockTrackingService
     {
         await _portfolioStateSyncService.EnsureFreshAsync(cancellationToken);
         var marketDataReadiness = _marketDataService.GetReadiness();
-        var positions = await _repository.GetAllPositionsAsync(cancellationToken);
+        var positions = await _context.Positions
+            .OrderBy(position => position.Ticker)
+            .ToListAsync(cancellationToken);
         var stockDiscovery = await DiscoverNewStocksAsync(positions, cancellationToken);
+        var trackedStocks = await _context.TrackedStocks
+            .OrderBy(stock => stock.Ticker)
+            .ToListAsync(cancellationToken);
+        var trackedStocksByTicker = trackedStocks.ToDictionary(
+            stock => stock.Ticker,
+            StringComparer.OrdinalIgnoreCase);
+        var positionsByTicker = positions
+            .GroupBy(position => NormalizeMarketTicker(position.Ticker), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+        var firstObservedAtUtc = DateTimeOffset.UtcNow;
+        foreach (var (ticker, position) in positionsByTicker)
+        {
+            if (trackedStocksByTicker.ContainsKey(ticker))
+            {
+                continue;
+            }
+
+            var positionStock = new TrackedStock
+            {
+                Ticker = ticker,
+                Name = ticker,
+                ShortName = ticker,
+                CurrencyCode = position.Currency.Trim().ToUpperInvariant(),
+                InstrumentType = "PORTFOLIO_POSITION",
+                FirstSeenAtUtc = firstObservedAtUtc,
+                LastSeenAtUtc = firstObservedAtUtc
+            };
+            _context.TrackedStocks.Add(positionStock);
+            trackedStocks.Add(positionStock);
+            trackedStocksByTicker.Add(ticker, positionStock);
+        }
+
+        var tickersToIngest = trackedStocks
+            .OrderByDescending(stock => positionsByTicker.ContainsKey(stock.Ticker))
+            .ThenBy(stock => stock.LastMarketDataAttemptAtUtc ?? DateTimeOffset.MinValue)
+            .ThenBy(stock => stock.Ticker, StringComparer.OrdinalIgnoreCase)
+            .Select(stock => stock.Ticker)
+            .ToArray();
+
         if (!marketDataReadiness.LiveProviderConfigured)
         {
             _logger.LogWarning(
                 "Stock price tracking is non-actionable. {MarketDataMessage}",
                 marketDataReadiness.Message);
+            await _context.SaveChangesAsync(cancellationToken);
 
             return new StockTrackingCycleResult
             {
                 MarketDataReadiness = marketDataReadiness,
                 SellRecommendations = await _portfolioReviewService.ReviewOpenPositionsAsync(cancellationToken),
                 NewStocks = stockDiscovery.Stocks,
-                TrackedStockCount = stockDiscovery.TrackedStockCount,
+                TrackedStockCount = trackedStocks.Count,
                 NewlyTrackedStockCount = stockDiscovery.NewlyTrackedStockCount,
+                DeferredStockTickCount = tickersToIngest.Length,
                 NewStockDiscoveryError = stockDiscovery.Error
             };
         }
 
         var updatedTickers = new List<string>();
-        var trackedTickers = await _context.TrackedStocks
-            .AsNoTracking()
-            .OrderBy(stock => stock.Ticker)
-            .Select(stock => stock.Ticker)
-            .ToListAsync(cancellationToken);
-        var positionsByTicker = positions
-            .GroupBy(position => NormalizeMarketTicker(position.Ticker), StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
-        var tickersToIngest = positions
-            .Select(position => position.Ticker)
-            .Concat(trackedTickers)
-            .Where(ticker => !string.IsNullOrWhiteSpace(ticker))
-            .Select(NormalizeMarketTicker)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+        var ingestionBatch = await _marketDataService.IngestBatchAsync(
+            tickersToIngest,
+            MaximumStockTicksPerCycle,
+            MaximumStockTickCollectionDuration,
+            cancellationToken);
         var stockTicksCollected = 0;
 
-        foreach (var ticker in tickersToIngest)
+        foreach (var item in ingestionBatch.Items)
         {
-            var ingestion = await _marketDataService.IngestAsync(ticker, cancellationToken);
+            var ticker = item.Symbol;
+            var ingestion = item.Ingestion;
+            if (trackedStocksByTicker.TryGetValue(ticker, out var trackedStock))
+            {
+                trackedStock.LastMarketDataAttemptAtUtc = DateTimeOffset.UtcNow;
+            }
+
             if (ingestion.PersistedSnapshot is not null && ingestion.Data is { IsSynthetic: false })
             {
                 stockTicksCollected++;
@@ -183,8 +227,17 @@ public sealed class StockTrackingService
 
             position.CurrentPrice = marketData.Price;
             position.UpdatedAtUtc = marketData.TimestampUtc;
-            await _repository.UpsertPositionAsync(position, cancellationToken);
             updatedTickers.Add(position.Ticker);
+        }
+
+        await _context.SaveChangesAsync(cancellationToken);
+        if (ingestionBatch.DeferredSymbolCount > 0)
+        {
+            _logger.LogInformation(
+                "Stock tick collection deferred {DeferredCount} of {TotalCount} symbols for a later cycle.{BudgetStatus}",
+                ingestionBatch.DeferredSymbolCount,
+                tickersToIngest.Length,
+                ingestionBatch.TimeBudgetExhausted ? " The collection time budget was exhausted." : string.Empty);
         }
 
         var sellRecommendations = await _portfolioReviewService.ReviewOpenPositionsAsync(cancellationToken);
@@ -194,9 +247,11 @@ public sealed class StockTrackingService
         {
             MarketDataReadiness = marketDataReadiness,
             UpdatedTickers = updatedTickers,
-            TrackedStockCount = stockDiscovery.TrackedStockCount,
+            TrackedStockCount = trackedStocks.Count,
             NewlyTrackedStockCount = stockDiscovery.NewlyTrackedStockCount,
             StockTicksCollected = stockTicksCollected,
+            DeferredStockTickCount = ingestionBatch.DeferredSymbolCount,
+            StockTickCollectionBudgetExhausted = ingestionBatch.TimeBudgetExhausted,
             SellRecommendations = sellRecommendations,
             BuyOpportunities = buyOpportunities,
             NewStocks = stockDiscovery.Stocks,
@@ -207,7 +262,6 @@ public sealed class StockTrackingService
     private async Task<(
         IReadOnlyList<Trading212TradableInstrument> Stocks,
         string? Error,
-        int TrackedStockCount,
         int NewlyTrackedStockCount)> DiscoverNewStocksAsync(
         IReadOnlyCollection<PortfolioPosition> positions,
         CancellationToken cancellationToken)
@@ -229,11 +283,7 @@ public sealed class StockTrackingService
                 or OperationCanceledException)
         {
             _logger.LogWarning(exception, "Stock discovery failed. Verify Trading 212 metadata access.");
-            return (
-                [],
-                StockDiscoveryErrorMessage,
-                await _context.TrackedStocks.CountAsync(cancellationToken),
-                0);
+            return ([], StockDiscoveryErrorMessage, 0);
         }
 
         var stockInstruments = instruments
@@ -296,11 +346,7 @@ public sealed class StockTrackingService
             .Take(MaximumReportedNewStocks)
             .ToArray();
 
-        return (
-            newStocks,
-            null,
-            await _context.TrackedStocks.CountAsync(cancellationToken),
-            newlyTrackedTickers.Count);
+        return (newStocks, null, newlyTrackedTickers.Count);
     }
 
     private static Trading212TradableInstrument NormalizeInstrument(Trading212TradableInstrument instrument)
@@ -330,7 +376,10 @@ public sealed class StockTrackingService
             : instrument.CurrencyCode;
         stock.InstrumentType = instrument.Type;
         stock.AddedOn = instrument.AddedOn ?? stock.AddedOn;
-        stock.LastSeenAtUtc = observedAtUtc;
+        if (stock.LastSeenAtUtc <= observedAtUtc - TrackedStockLastSeenRefreshInterval)
+        {
+            stock.LastSeenAtUtc = observedAtUtc;
+        }
     }
 
     private static string GetInstrumentName(Trading212TradableInstrument instrument)

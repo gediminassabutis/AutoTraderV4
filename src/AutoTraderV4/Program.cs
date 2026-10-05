@@ -21,8 +21,13 @@ public partial class Program
             "AddedOn" timestamp with time zone NULL,
             "FirstSeenAtUtc" timestamp with time zone NOT NULL,
             "LastSeenAtUtc" timestamp with time zone NOT NULL,
+            "LastMarketDataAttemptAtUtc" timestamp with time zone NULL,
             CONSTRAINT "PK_TrackedStocks" PRIMARY KEY ("Ticker")
         );
+        ALTER TABLE "TrackedStocks"
+            ADD COLUMN IF NOT EXISTS "LastMarketDataAttemptAtUtc" timestamp with time zone NULL;
+        CREATE INDEX IF NOT EXISTS "IX_TrackedStocks_LastMarketDataAttemptAtUtc"
+            ON "TrackedStocks" ("LastMarketDataAttemptAtUtc");
         """;
 
     public static async Task Main(string[] args)

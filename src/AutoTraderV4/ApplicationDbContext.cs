@@ -82,6 +82,7 @@ public sealed class ApplicationDbContext : DbContext
             entity.Property(x => x.InstrumentType).IsRequired().HasMaxLength(32);
             entity.Property(x => x.FirstSeenAtUtc).IsRequired();
             entity.Property(x => x.LastSeenAtUtc).IsRequired();
+            entity.HasIndex(x => x.LastMarketDataAttemptAtUtc);
         });
 
         modelBuilder.Entity<SentimentRecord>(entity =>
@@ -216,6 +217,7 @@ public sealed class TrackedStock
     public DateTimeOffset? AddedOn { get; set; }
     public DateTimeOffset FirstSeenAtUtc { get; set; }
     public DateTimeOffset LastSeenAtUtc { get; set; }
+    public DateTimeOffset? LastMarketDataAttemptAtUtc { get; set; }
 }
 
 public sealed class SentimentRecord

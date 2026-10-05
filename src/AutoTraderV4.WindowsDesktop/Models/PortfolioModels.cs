@@ -88,6 +88,8 @@ public sealed class StockTrackingCycleResult
     public int TrackedStockCount { get; set; }
     public int NewlyTrackedStockCount { get; set; }
     public int StockTicksCollected { get; set; }
+    public int DeferredStockTickCount { get; set; }
+    public bool StockTickCollectionBudgetExhausted { get; set; }
     public List<StockTrackingTickerResult> SellRecommendations { get; set; } = [];
     public List<StockTrackingTickerResult> BuyOpportunities { get; set; } = [];
     public List<StockTrackingNewStockResult> NewStocks { get; set; } = [];

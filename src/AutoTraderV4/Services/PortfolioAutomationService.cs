@@ -489,6 +489,16 @@ public sealed class PortfolioAutomationBackgroundService : BackgroundService
                 string.Join(", ", cycleResult.NewStocks.Select(stock => stock.Ticker)));
         }
 
+        if (cycleResult.DeferredStockTickCount > 0)
+        {
+            _logger.LogInformation(
+                "Stock tick collection deferred {Count} symbols to later cycles.{BudgetStatus}",
+                cycleResult.DeferredStockTickCount,
+                cycleResult.StockTickCollectionBudgetExhausted
+                    ? " The per-cycle collection time budget was exhausted."
+                    : string.Empty);
+        }
+
         foreach (var ticker in cycleResult.UpdatedTickers)
         {
             _logger.LogDebug("Updated the current market tick for {Ticker}.", ticker);
