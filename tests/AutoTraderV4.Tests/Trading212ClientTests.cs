@@ -113,6 +113,49 @@ public class Trading212ClientTests
     }
 
     [Fact]
+    public async Task GetAvailableInstrumentsAsync_ParsesTradableStockMetadata()
+    {
+        const string responseJson = """
+        [
+          {
+            "addedOn": "2026-10-04T18:00:00Z",
+            "currencyCode": "USD",
+            "isin": "US1234567890",
+            "name": "Example Corporation",
+            "shortName": "Example",
+            "ticker": "EXM_US_EQ",
+            "type": "STOCK"
+          }
+        ]
+        """;
+
+        using var client = new HttpClient(new RecordingHttpMessageHandler((request, _) =>
+        {
+            Assert.Equal(HttpMethod.Get, request.Method);
+            Assert.Equal("https://demo.trading212.com/api/v0/equity/metadata/instruments", request.RequestUri!.ToString());
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(responseJson, Encoding.UTF8, "application/json")
+            };
+        }));
+
+        var sut = new Trading212Client(client, new Trading212Options
+        {
+            BaseUrl = "https://demo.trading212.com",
+            ApiKey = "demo-key",
+            ApiSecret = "demo-secret"
+        });
+
+        var instrument = Assert.Single(await sut.GetAvailableInstrumentsAsync());
+
+        Assert.Equal("EXM_US_EQ", instrument.Ticker);
+        Assert.Equal("Example Corporation", instrument.Name);
+        Assert.Equal("STOCK", instrument.Type);
+        Assert.Equal("USD", instrument.CurrencyCode);
+        Assert.Equal(new DateTimeOffset(2026, 10, 4, 18, 0, 0, TimeSpan.Zero), instrument.AddedOn);
+    }
+
+    [Fact]
     public async Task PlaceOrderAsync_Market_SendsExpectedPayloadAndParsesOrderResult()
     {
         const string responseJson = """

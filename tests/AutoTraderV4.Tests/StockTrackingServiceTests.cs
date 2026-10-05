@@ -35,6 +35,25 @@ public sealed class StockTrackingServiceTests
             PeakPortfolioValue = 100000m,
             UpdatedAtUtc = now
         });
+        context.OrderExecutionRecords.AddRange(
+            new OrderExecutionRecord
+            {
+                Id = Guid.NewGuid(),
+                Ticker = "MSFT_US_EQ",
+                Side = "Buy",
+                Status = nameof(OrderExecutionStatus.Filled),
+                CreatedUtc = now.AddMinutes(-1),
+                UpdatedUtc = now.AddMinutes(-1)
+            },
+            new OrderExecutionRecord
+            {
+                Id = Guid.NewGuid(),
+                Ticker = "ZZZZ",
+                Side = "Buy",
+                Status = nameof(OrderExecutionStatus.Validated),
+                CreatedUtc = now.AddMinutes(-1),
+                UpdatedUtc = now.AddMinutes(-1)
+            });
         context.StrategySignals.AddRange(
             new StrategySignalRecord
             {
@@ -75,6 +94,58 @@ public sealed class StockTrackingServiceTests
         await context.SaveChangesAsync();
 
         var repository = new PortfolioRepository(context);
+        var tradingClient = new StaticTrading212Client(
+        [
+            new Trading212TradableInstrument
+            {
+                Ticker = "KO_US_EQ",
+                Name = "Coca-Cola",
+                Type = "STOCK",
+                AddedOn = now.AddMinutes(-1)
+            },
+            new Trading212TradableInstrument
+            {
+                Ticker = "MSFT_US_EQ",
+                Name = "Microsoft",
+                Type = "STOCK",
+                AddedOn = now
+            },
+            new Trading212TradableInstrument
+            {
+                Ticker = "NVDA_US_EQ",
+                Name = "NVIDIA",
+                Type = "STOCK",
+                AddedOn = now.AddSeconds(-1)
+            },
+            new Trading212TradableInstrument
+            {
+                Ticker = "TSLA_US_EQ",
+                Name = "Tesla",
+                Type = "STOCK",
+                AddedOn = now.AddSeconds(-2)
+            },
+            new Trading212TradableInstrument
+            {
+                Ticker = "AMD_US_EQ",
+                Name = "AMD",
+                Type = "STOCK",
+                AddedOn = now.AddSeconds(-3)
+            },
+            new Trading212TradableInstrument
+            {
+                Ticker = "ZZZZ_US_EQ",
+                Name = "Unfilled example",
+                Type = "STOCK",
+                AddedOn = now.AddSeconds(-4)
+            },
+            new Trading212TradableInstrument
+            {
+                Ticker = "VTI_US_EQ",
+                Name = "Vanguard Total Stock Market ETF",
+                Type = "ETF",
+                AddedOn = now.AddSeconds(-5)
+            }
+        ]);
         var portfolioSync = new PortfolioStateSyncService(
             repository,
             new DemoTrading212Client(),
@@ -112,6 +183,7 @@ public sealed class StockTrackingServiceTests
             NullLogger<BuyOpportunityService>.Instance);
         var service = new StockTrackingService(
             repository,
+            tradingClient,
             portfolioSync,
             marketData,
             new PortfolioReviewService(repository),
@@ -127,10 +199,14 @@ public sealed class StockTrackingServiceTests
         Assert.Equal(110m, updatedPosition.CurrentPrice);
         Assert.Equal("NVDA", Assert.Single(result.BuyOpportunities).Ticker);
         Assert.Equal(86m, result.BuyOpportunities[0].ConfidenceScore);
+        Assert.Equal(
+            new[] { "NVDA_US_EQ", "TSLA_US_EQ", "AMD_US_EQ", "ZZZZ_US_EQ" },
+            result.NewStocks.Select(stock => stock.Ticker));
+        Assert.Null(result.NewStockDiscoveryError);
         Assert.Equal(4, await context.MarketSnapshots.CountAsync());
         Assert.Equal(100m, (await context.MarketSnapshots.SingleAsync(snapshot => snapshot.Ticker == "NVDA")).Price);
         Assert.Equal(500m, (await context.MarketSnapshots.SingleAsync(snapshot => snapshot.Ticker == "AMD")).Price);
-        Assert.Empty(await context.OrderExecutionRecords.ToListAsync());
+        Assert.Equal(2, await context.OrderExecutionRecords.CountAsync());
     }
 
     [Fact]
@@ -199,6 +275,7 @@ public sealed class StockTrackingServiceTests
             NullLogger<BuyOpportunityService>.Instance);
         var service = new StockTrackingService(
             repository,
+            new DemoTrading212Client(),
             portfolioSync,
             marketData,
             new PortfolioReviewService(repository),
@@ -267,6 +344,16 @@ public sealed class StockTrackingServiceTests
             NullLogger<BuyOpportunityService>.Instance);
         var service = new StockTrackingService(
             repository,
+            new StaticTrading212Client(
+            [
+                new Trading212TradableInstrument
+                {
+                    Ticker = "ABC_US_EQ",
+                    Name = "Example Stock",
+                    Type = "STOCK",
+                    AddedOn = DateTimeOffset.UtcNow
+                }
+            ]),
             portfolioSync,
             marketData,
             new PortfolioReviewService(repository),
@@ -280,6 +367,7 @@ public sealed class StockTrackingServiceTests
         Assert.Equal("non-actionable", result.MarketDataReadiness.Mode);
         Assert.Empty(result.UpdatedTickers);
         Assert.Empty(result.BuyOpportunities);
+        Assert.Equal("ABC_US_EQ", Assert.Single(result.NewStocks).Ticker);
         Assert.Equal(0, provider.Calls);
         Assert.Equal(105m, (await context.Positions.SingleAsync()).CurrentPrice);
         Assert.Empty(await context.MarketSnapshots.ToListAsync());
@@ -384,6 +472,30 @@ public sealed class StockTrackingServiceTests
         {
             Calls++;
             return Task.FromResult<MarketDataContract?>(createContract(symbol));
+        }
+    }
+
+    private sealed class StaticTrading212Client(
+        IReadOnlyList<Trading212TradableInstrument> instruments) : ITrading212Client
+    {
+        public Task<Trading212AccountSummary> GetAccountSummaryAsync(CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<IReadOnlyList<Trading212Position>> GetPositionsAsync(CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<IReadOnlyList<Trading212TradableInstrument>> GetAvailableInstrumentsAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(instruments);
+        }
+
+        public Task<Trading212OrderResult> PlaceOrderAsync(Trading212OrderRequest order, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
         }
     }
 }

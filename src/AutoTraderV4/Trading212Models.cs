@@ -282,6 +282,30 @@ public sealed class Trading212Instrument
     public string Ticker { get; set; } = string.Empty;
 }
 
+public sealed class Trading212TradableInstrument
+{
+    [JsonPropertyName("addedOn")]
+    public DateTimeOffset? AddedOn { get; set; }
+
+    [JsonPropertyName("currencyCode")]
+    public string CurrencyCode { get; set; } = string.Empty;
+
+    [JsonPropertyName("isin")]
+    public string Isin { get; set; } = string.Empty;
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("shortName")]
+    public string ShortName { get; set; } = string.Empty;
+
+    [JsonPropertyName("ticker")]
+    public string Ticker { get; set; } = string.Empty;
+
+    [JsonPropertyName("type")]
+    public string Type { get; set; } = string.Empty;
+}
+
 public sealed class Trading212OrderResult
 {
     [JsonPropertyName("id")]
