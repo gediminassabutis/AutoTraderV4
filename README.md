@@ -7,6 +7,7 @@ A .NET 10 C# trading automation starter for the Trading 212 Public API, with dem
 - Trading 212 API client with Basic Authentication
 - ASP.NET Core Web API endpoints
 - PostgreSQL persistence via Entity Framework Core
+- Optional Stocktwits MCP sentiment and stock-stat ingestion
 - Weighted multi-strategy scoring engine with risk gates
 - Portfolio risk policy and defensive-mode validation
 - Unit tests covering auth, order behavior, and strategy/risk checks
@@ -17,6 +18,7 @@ A .NET 10 C# trading automation starter for the Trading 212 Public API, with dem
 - .NET 10 SDK
 - Docker Desktop or a PostgreSQL instance
 - Trading 212 Invest or Stocks ISA API credentials
+- Node.js 18+ when Stocktwits MCP ingestion is enabled
 
 ## Run PostgreSQL locally
 
@@ -68,6 +70,38 @@ The app falls back to demo data automatically when `Trading212:UseDemoData` is `
 On startup, the app begins a five-minute stock-tracking cycle. It syncs every `STOCK` instrument from Trading 212's accessible-instruments catalog into the persistent `TrackedStocks` table, preserving the full market-specific ticker and refreshing instrument metadata on later cycles. Newly discovered catalog entries remain in the database even when they are held or have appeared in order history; the `newStocks` response is a preview of up to 20 newly tracked, unheld/unordered stocks. Tick collection is bounded to 100 symbols or 45 seconds per cycle, and collected snapshots are persisted together. Each `IMarketDataProvider` sets its minimum request interval (300 ms by default); the tracker prioritizes held positions, then resumes from the least recently attempted symbols so a large catalog is covered over successive cycles rather than repeatedly restarting at the beginning. `LastMarketDataAttemptAtUtc` also advances on provider failures, preventing a broken symbol from starving the rest of the universe. The response reports `trackedStockCount`, `newlyTrackedStockCount`, `stockTicksCollected`, and `deferredStockTickCount`; it also indicates when the collection time budget was exhausted. If catalog discovery fails, saved stocks remain available for tick collection when a live provider is configured. Catalog errors are logged and returned as `newStockDiscoveryError` without stopping the rest of the tracking cycle. The stock universe is informational only—it does not score or trade every catalog instrument. Strategy price deltas are normalized against the fresh quote before scoring, and recommendations require fresh measured liquidity and spread, a classified sector, and portfolio risk approval including exposure reserved by earlier recommendations in the same scan. The service logs recommendations only; broker order submission is intentionally disabled until authenticated execution and complete risk telemetry are available.
 
 The built-in demo and fallback market-data providers return synthetic quotes. These quotes are explicitly non-actionable and are not counted as collected stock ticks: the tracker will not collect the research snapshots or generate buy recommendations until an `IMarketDataProvider` that advertises live data is configured. Held-position updates and buy recommendations additionally require fresh, non-synthetic data, with buy recommendations also requiring measured liquidity, spread, and sector metadata. The current readiness is available at `GET /api/market-data/status` and as an API/data-source alert on the dashboard.
+
+### Stocktwits MCP sentiment and stock stats
+
+The app can launch the official [Stocktwits MCP server](https://github.com/stocktwits/stocktwits-mcp) over stdio. It is disabled by default. To enable it in Windows PowerShell:
+
+```powershell
+$env:StocktwitsMcp__Enabled = 'true'
+dotnet run --project src/AutoTraderV4/AutoTraderV4.csproj --urls http://localhost:5065
+```
+
+The WPF desktop header also has a **Stocktwits MCP** toggle. It reads and updates the running backend's setting using `GET`/`PUT /api/settings/stocktwits-mcp`; a successful change takes effect immediately for the next tracking cycle. The UI toggle is runtime-only: after a backend restart, the setting returns to `StocktwitsMcp:Enabled` from the backend's configuration.
+
+On other platforms, install Node.js 18+ and `npx`, set `StocktwitsMcp__Enabled=true`, and start the app. The default launch command uses `npx` and a pinned Stocktwits server revision; the MCP SDK wraps stdio commands in the Windows command shell as needed. On Windows, Git Bash is detected for the npm prepare script when installed; `StocktwitsMcp__NpmScriptShell` can override its path. `StocktwitsMcp__Command` and `StocktwitsMcp__Arguments__0`, etc. can override the process command and arguments.
+
+If your npm installation cannot launch a GitHub package directly, clone and build the official server locally, then point the MCP client at its compiled entry point:
+
+```powershell
+$mcpPath = Join-Path $env:LOCALAPPDATA 'AutoTraderV4\stocktwits-mcp'
+git clone https://github.com/stocktwits/stocktwits-mcp.git $mcpPath
+Push-Location $mcpPath
+$env:npm_config_script_shell = 'C:\Program Files\Git\bin\bash.exe'
+npm install
+Pop-Location
+$env:StocktwitsMcp__Enabled = 'true'
+$env:StocktwitsMcp__Command = 'node'
+$env:StocktwitsMcp__Arguments__0 = Join-Path $mcpPath 'dist\index.js'
+dotnet run --project src\AutoTraderV4\AutoTraderV4.csproj --urls http://localhost:5065
+```
+
+When enabled, each five-minute tracking cycle ingests Stocktwits stats for held positions, while the provider refreshes each symbol at most every 15 minutes by default. It calls `get_symbol_sentiment` and `get_stock_price`; the message counts, sentiment score/label, quote and fundamental fields, and the complete quote response are persisted in `SentimentRecords.MetadataJson`. The normalized sentiment score and sample-size confidence are persisted in the corresponding scalar columns. MCP quotes are informational only and are not used as executable market prices.
+
+Use `POST /api/sentiment/{symbol}/ingest` to ingest a symbol on demand and `GET /api/sentiment/{symbol}` to read its latest persisted record. Both routes accept the portfolio ticker or the normalized Stocktwits symbol.
 
 For test-only runs without a PostgreSQL instance, set the app to use EF Core's in-memory database:
 
@@ -125,6 +159,10 @@ The automated suite now includes:
 - `GET /api/dashboard/summary`
 - `GET /api/watchlist`
 - `GET /api/market-data/status`
+- `GET /api/settings/stocktwits-mcp`
+- `PUT /api/settings/stocktwits-mcp`
+- `GET /api/sentiment/{symbol}`
+- `POST /api/sentiment/{symbol}/ingest`
 - `GET /api/risk/summary`
 - `GET /api/portfolio`
 - `GET /api/portfolio/review`

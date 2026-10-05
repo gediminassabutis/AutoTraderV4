@@ -13,6 +13,8 @@ public sealed class StockTrackingCycleResult
     public int StockTicksCollected { get; init; }
     public int DeferredStockTickCount { get; init; }
     public bool StockTickCollectionBudgetExhausted { get; init; }
+    public IReadOnlyList<string> SentimentTickers { get; init; } = [];
+    public IReadOnlyList<string> SentimentFailures { get; init; } = [];
     public IReadOnlyList<PortfolioReviewDecision> SellRecommendations { get; init; } = [];
     public IReadOnlyList<BuyOpportunityDecision> BuyOpportunities { get; init; } = [];
     public IReadOnlyList<Trading212TradableInstrument> NewStocks { get; init; } = [];
@@ -63,6 +65,8 @@ public sealed class StockTrackingService
     private readonly BuyOpportunityService _buyOpportunityService;
     private readonly ILogger<StockTrackingService> _logger;
     private readonly StockTrackingCycleGate _cycleGate;
+    private readonly SentimentService? _sentimentService;
+    private readonly StocktwitsMcpOptions _stocktwitsMcpOptions;
 
     public StockTrackingService(
         ApplicationDbContext context,
@@ -73,7 +77,9 @@ public sealed class StockTrackingService
         PortfolioReviewService portfolioReviewService,
         BuyOpportunityService buyOpportunityService,
         ILogger<StockTrackingService> logger,
-        StockTrackingCycleGate cycleGate)
+        StockTrackingCycleGate cycleGate,
+        SentimentService? sentimentService = null,
+        StocktwitsMcpOptions? stocktwitsMcpOptions = null)
     {
         _context = context ?? throw new ArgumentNullException(nameof(context));
         _repository = repository ?? throw new ArgumentNullException(nameof(repository));
@@ -84,6 +90,8 @@ public sealed class StockTrackingService
         _buyOpportunityService = buyOpportunityService ?? throw new ArgumentNullException(nameof(buyOpportunityService));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _cycleGate = cycleGate ?? throw new ArgumentNullException(nameof(cycleGate));
+        _sentimentService = sentimentService;
+        _stocktwitsMcpOptions = stocktwitsMcpOptions ?? new StocktwitsMcpOptions();
     }
 
     public Task<StockTrackingCycleResult> RunCycleAsync(CancellationToken cancellationToken = default)
@@ -138,6 +146,7 @@ public sealed class StockTrackingService
             .Select(stock => stock.Ticker)
             .ToArray();
 
+        var sentimentIngestion = await IngestSentimentAsync(positions, cancellationToken);
         if (!marketDataReadiness.LiveProviderConfigured)
         {
             _logger.LogWarning(
@@ -148,6 +157,8 @@ public sealed class StockTrackingService
             return new StockTrackingCycleResult
             {
                 MarketDataReadiness = marketDataReadiness,
+                SentimentTickers = sentimentIngestion.Tickers,
+                SentimentFailures = sentimentIngestion.Failures,
                 SellRecommendations = await _portfolioReviewService.ReviewOpenPositionsAsync(cancellationToken),
                 NewStocks = stockDiscovery.Stocks,
                 TrackedStockCount = trackedStocks.Count,
@@ -252,11 +263,51 @@ public sealed class StockTrackingService
             StockTicksCollected = stockTicksCollected,
             DeferredStockTickCount = ingestionBatch.DeferredSymbolCount,
             StockTickCollectionBudgetExhausted = ingestionBatch.TimeBudgetExhausted,
+            SentimentTickers = sentimentIngestion.Tickers,
+            SentimentFailures = sentimentIngestion.Failures,
             SellRecommendations = sellRecommendations,
             BuyOpportunities = buyOpportunities,
             NewStocks = stockDiscovery.Stocks,
             NewStockDiscoveryError = stockDiscovery.Error
         };
+    }
+
+    private async Task<(IReadOnlyList<string> Tickers, IReadOnlyList<string> Failures)> IngestSentimentAsync(
+        IReadOnlyCollection<PortfolioPosition> positions,
+        CancellationToken cancellationToken)
+    {
+        if (!_stocktwitsMcpOptions.Enabled)
+        {
+            return ([], []);
+        }
+
+        if (_sentimentService is null)
+        {
+            throw new InvalidOperationException("Stocktwits MCP is enabled but sentiment ingestion is not registered.");
+        }
+
+        var tickers = new List<string>();
+        var failures = new List<string>();
+        foreach (var position in positions)
+        {
+            var result = await _sentimentService.IngestAsync(position.Ticker, cancellationToken);
+            if (result.Success && result.FreshnessStatus == DataFreshnessStatus.Fresh)
+            {
+                tickers.Add(position.Ticker);
+                continue;
+            }
+
+            var failure = result.Failures.Count > 0
+                ? string.Join("; ", result.Failures)
+                : $"Sentiment data is {result.FreshnessStatus}.";
+            failures.Add($"{position.Ticker}: {failure}");
+            _logger.LogWarning(
+                "Stocktwits sentiment data is unavailable for {Ticker}: {Failure}",
+                position.Ticker,
+                failure);
+        }
+
+        return (tickers, failures);
     }
 
     private async Task<(

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 
 namespace AutoTraderV4.Services;
 
@@ -52,7 +53,7 @@ public sealed record SentimentDataContract
 
         return new SentimentRecord
         {
-            Ticker = NormalizedSymbol.Trim(),
+            Ticker = string.IsNullOrWhiteSpace(Ticker) ? NormalizedSymbol.Trim() : Ticker.Trim(),
             Symbol = NormalizedSymbol.Trim(),
             Source = Source,
             ProviderName = ProviderName,
@@ -80,6 +81,10 @@ public sealed class SentimentIngestionResult
 public interface ISentimentProvider
 {
     Task<SentimentDataContract?> GetAsync(string symbol, CancellationToken cancellationToken = default);
+}
+
+public interface IStocktwitsSentimentProvider : ISentimentProvider
+{
 }
 
 public sealed class DemoSentimentProvider : ISentimentProvider
@@ -154,15 +159,18 @@ public sealed class SentimentService
     private readonly ApplicationDbContext _context;
     private readonly IReadOnlyList<ISentimentProvider> _providers;
     private readonly TimeProvider _timeProvider;
+    private readonly StocktwitsMcpOptions? _stocktwitsMcpOptions;
 
     public SentimentService(
         ApplicationDbContext context,
         IEnumerable<ISentimentProvider>? providers = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        StocktwitsMcpOptions? stocktwitsMcpOptions = null)
     {
         _context = context ?? throw new ArgumentNullException(nameof(context));
         _providers = (providers ?? new[] { new DemoSentimentProvider() }).ToList();
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _stocktwitsMcpOptions = stocktwitsMcpOptions;
     }
 
     public async Task<SentimentIngestionResult> IngestAsync(string symbol, CancellationToken cancellationToken = default)
@@ -175,8 +183,25 @@ public sealed class SentimentService
         var normalizedSymbol = symbol.Trim();
         var providerFailures = new List<string>();
         SentimentDataContract? bestStaleCandidate = null;
+        var providers = _stocktwitsMcpOptions switch
+        {
+            { Enabled: true } => _providers.OfType<IStocktwitsSentimentProvider>().ToArray(),
+            { Enabled: false } => _providers.Where(provider => provider is not IStocktwitsSentimentProvider).ToArray(),
+            _ => _providers
+        };
 
-        foreach (var provider in _providers)
+        if (providers.Count == 0)
+        {
+            return new SentimentIngestionResult
+            {
+                Success = false,
+                FreshnessStatus = DataFreshnessStatus.Missing,
+                ActiveProvider = "none",
+                Failures = ["No sentiment provider is configured for the current Stocktwits MCP setting."]
+            };
+        }
+
+        foreach (var provider in providers)
         {
             try
             {
@@ -193,6 +218,31 @@ public sealed class SentimentService
                 var freshness = DataFreshnessRules.Evaluate(candidate.TimestampUtc, candidate.FreshnessWindow, reference);
                 if (freshness == DataFreshnessStatus.Fresh)
                 {
+                    var recordTicker = string.IsNullOrWhiteSpace(candidate.Ticker)
+                        ? candidate.NormalizedSymbol.Trim()
+                        : candidate.Ticker.Trim();
+                    var existingRecord = await _context.SentimentRecords
+                        .AsNoTracking()
+                        .Where(record =>
+                            record.Ticker == recordTicker
+                            && record.ProviderName == candidate.ProviderName)
+                        .OrderByDescending(record => record.RecordedAtUtc)
+                        .FirstOrDefaultAsync(cancellationToken);
+
+                    if (existingRecord is not null
+                        && Math.Abs((existingRecord.CreatedUtc - candidate.TimestampUtc).TotalSeconds) <= 1)
+                    {
+                        return new SentimentIngestionResult
+                        {
+                            Success = true,
+                            FreshnessStatus = DataFreshnessStatus.Fresh,
+                            ActiveProvider = candidate.ProviderName,
+                            Data = candidate,
+                            PersistedRecord = existingRecord,
+                            Failures = providerFailures
+                        };
+                    }
+
                     var record = candidate.ToRecord(reference);
                     _context.SentimentRecords.Add(record);
                     await _context.SaveChangesAsync(cancellationToken);
@@ -210,6 +260,10 @@ public sealed class SentimentService
 
                 providerFailures.Add($"{candidate.ProviderName}: stale data ({candidate.TimestampUtc:O})");
                 bestStaleCandidate ??= candidate;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {

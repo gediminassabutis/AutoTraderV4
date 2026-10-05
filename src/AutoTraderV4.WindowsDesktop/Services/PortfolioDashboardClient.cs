@@ -138,6 +138,39 @@ public sealed class PortfolioDashboardClient
         return result;
     }
 
+    public async Task<StocktwitsMcpSettingsView> GetStocktwitsMcpSettingsAsync(CancellationToken cancellationToken = default)
+    {
+        using var response = await _httpClient.GetAsync("/api/settings/stocktwits-mcp", cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        var settings = await response.Content.ReadFromJsonAsync<StocktwitsMcpSettingsView>(SerializerOptions, cancellationToken);
+        return settings ?? throw new InvalidOperationException("The backend returned an empty Stocktwits MCP setting.");
+    }
+
+    public async Task<StocktwitsMcpSettingsView> UpdateStocktwitsMcpSettingsAsync(
+        bool enabled,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await _httpClient.PutAsJsonAsync(
+            "/api/settings/stocktwits-mcp",
+            new StocktwitsMcpSettingsView { Enabled = enabled },
+            SerializerOptions,
+            cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            var detail = await response.Content.ReadAsStringAsync(cancellationToken);
+            throw new HttpRequestException(
+                string.IsNullOrWhiteSpace(detail)
+                    ? $"Backend responded with {(int)response.StatusCode} ({response.StatusCode})."
+                    : $"Backend responded with {(int)response.StatusCode} ({response.StatusCode}): {detail.Trim()}",
+                null,
+                response.StatusCode);
+        }
+
+        var settings = await response.Content.ReadFromJsonAsync<StocktwitsMcpSettingsView>(SerializerOptions, cancellationToken);
+        return settings ?? throw new InvalidOperationException("The backend returned an empty Stocktwits MCP setting.");
+    }
+
     public static PortfolioDashboard CreateFallbackDashboard()
     {
         Log("Creating fallback dashboard data.");
