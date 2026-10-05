@@ -4,6 +4,7 @@ namespace AutoTraderV4.Services;
 
 public sealed class StockTrackingCycleResult
 {
+    public MarketDataReadiness MarketDataReadiness { get; init; } = new();
     public IReadOnlyList<string> UpdatedTickers { get; init; } = [];
     public IReadOnlyList<PortfolioReviewDecision> SellRecommendations { get; init; } = [];
     public IReadOnlyList<BuyOpportunityDecision> BuyOpportunities { get; init; } = [];
@@ -37,7 +38,21 @@ public sealed class StockTrackingService
     public async Task<StockTrackingCycleResult> RunCycleAsync(CancellationToken cancellationToken = default)
     {
         await _portfolioStateSyncService.EnsureFreshAsync(cancellationToken);
+        var marketDataReadiness = _marketDataService.GetReadiness();
         var positions = await _repository.GetAllPositionsAsync(cancellationToken);
+        if (!marketDataReadiness.LiveProviderConfigured)
+        {
+            _logger.LogWarning(
+                "Stock price tracking is non-actionable. {MarketDataMessage}",
+                marketDataReadiness.Message);
+
+            return new StockTrackingCycleResult
+            {
+                MarketDataReadiness = marketDataReadiness,
+                SellRecommendations = await _portfolioReviewService.ReviewOpenPositionsAsync(cancellationToken)
+            };
+        }
+
         var updatedTickers = new List<string>();
 
         foreach (var position in positions)
@@ -83,6 +98,7 @@ public sealed class StockTrackingService
 
         return new StockTrackingCycleResult
         {
+            MarketDataReadiness = marketDataReadiness,
             UpdatedTickers = updatedTickers,
             SellRecommendations = sellRecommendations,
             BuyOpportunities = buyOpportunities

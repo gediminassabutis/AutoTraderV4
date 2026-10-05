@@ -37,20 +37,25 @@ public sealed class RiskGovernanceService
         RiskContextSnapshot context,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(candidateTrade);
-        ArgumentNullException.ThrowIfNull(context);
-
-        candidateTrade.Validate();
-        var contextErrors = context.Validate();
-        if (contextErrors.Count > 0)
-        {
-            throw new ArgumentException("Risk context is invalid.", nameof(context));
-        }
+        ValidateCandidate(candidateTrade, context);
 
         await _portfolioStateSyncService.EnsureFreshAsync(cancellationToken);
         var state = await _repository.GetPortfolioStateAsync(cancellationToken);
         var positions = await _repository.GetAllPositionsAsync(cancellationToken);
         return EvaluateInternal(state, positions, candidateTrade, context);
+    }
+
+    internal RiskAssessmentResult EvaluateProjected(
+        TradeDecision candidateTrade,
+        RiskContextSnapshot context,
+        PortfolioStateRecord projectedState,
+        IReadOnlyCollection<PortfolioPosition> projectedPositions)
+    {
+        ValidateCandidate(candidateTrade, context);
+        ArgumentNullException.ThrowIfNull(projectedState);
+        ArgumentNullException.ThrowIfNull(projectedPositions);
+
+        return EvaluateInternal(projectedState, projectedPositions, candidateTrade, context);
     }
 
     public RiskAssessmentResult EvaluatePortfolioHealth(
@@ -163,6 +168,27 @@ public sealed class RiskGovernanceService
                 result.Violations.Add("A positive broker-confirmed position price is required.");
             }
 
+            var sector = context.Sector;
+            if (candidateTrade.Side == OrderSide.Buy)
+            {
+                var classifiedSector = SectorClassification.Resolve(candidateTrade.Ticker, context.Sector);
+                if (classifiedSector is null)
+                {
+                    result.Violations.Add("Candidate sector classification is unavailable; sector exposure cannot be validated.");
+                    sector = SectorClassification.Unclassified;
+                }
+                else
+                {
+                    sector = classifiedSector;
+                }
+            }
+            else if (heldPosition is not null)
+            {
+                sector = SectorClassification.Resolve(
+                    heldPosition.Ticker,
+                    persistedSector: heldPosition.Sector) ?? SectorClassification.Unclassified;
+            }
+
             var candidateValue = executionPrice > 0m
                 ? executionPrice * candidateTrade.Quantity
                 : 0m;
@@ -171,9 +197,8 @@ public sealed class RiskGovernanceService
             var projectedCash = candidateTrade.Side == OrderSide.Buy ? cash - candidateValue : cash + candidateValue;
             var projectedExposurePercent = Percentage(projectedExposureValue, totalValue);
             var projectedCashPercent = Percentage(projectedCash, totalValue);
-            var sector = heldPosition?.Sector ?? context.Sector;
             var sectorExposureValue = normalizedPositions
-                .Where(position => position.Sector.Equals(sector, StringComparison.OrdinalIgnoreCase))
+                .Where(position => SectorClassification.CouldBelongTo(position, sector))
                 .Sum(GetMarketValue);
             var projectedSectorExposureValue = Math.Max(0m, sectorExposureValue + signedCandidateValue);
             var projectedSectorExposurePercent = Percentage(projectedSectorExposureValue, totalValue);
@@ -312,5 +337,17 @@ public sealed class RiskGovernanceService
     {
         var effectivePrice = position.CurrentPrice > 0m ? position.CurrentPrice : position.AveragePrice;
         return Math.Abs(position.Quantity) * effectivePrice;
+    }
+
+    private static void ValidateCandidate(TradeDecision candidateTrade, RiskContextSnapshot context)
+    {
+        ArgumentNullException.ThrowIfNull(candidateTrade);
+        ArgumentNullException.ThrowIfNull(context);
+
+        candidateTrade.Validate();
+        if (context.Validate().Count > 0)
+        {
+            throw new ArgumentException("Risk context is invalid.", nameof(context));
+        }
     }
 }

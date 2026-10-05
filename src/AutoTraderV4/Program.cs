@@ -277,6 +277,9 @@ public partial class Program
         app.MapGet("/api/watchlist", async (IPortfolioDashboardService dashboardService, CancellationToken cancellationToken) =>
             Results.Ok((await dashboardService.GetDashboardAsync(cancellationToken)).Watchlist));
 
+        app.MapGet("/api/market-data/status", (MarketDataService marketDataService) =>
+            Results.Ok(marketDataService.GetReadiness()));
+
         app.MapGet("/api/risk/summary", async ([FromServices] IPortfolioDashboardService dashboardService, [FromServices] global::AutoTraderV4.PortfolioRiskService riskService, CancellationToken cancellationToken) =>
         {
             var dashboard = await dashboardService.GetDashboardAsync(cancellationToken);

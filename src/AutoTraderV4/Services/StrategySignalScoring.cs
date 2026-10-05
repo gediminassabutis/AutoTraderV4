@@ -2,6 +2,16 @@ namespace AutoTraderV4.Services;
 
 public static class StrategySignalScoring
 {
+    public static decimal NormalizePriceDelta(decimal priceDelta, decimal currentPrice)
+    {
+        if (currentPrice <= 0m)
+        {
+            throw new ArgumentOutOfRangeException(nameof(currentPrice), "Current price must be positive.");
+        }
+
+        return priceDelta / currentPrice * 100m;
+    }
+
     public static int CalculateConfidence(decimal signal)
     {
         var confidence = 50m + Math.Min(45m, Math.Abs(signal) * 30m);

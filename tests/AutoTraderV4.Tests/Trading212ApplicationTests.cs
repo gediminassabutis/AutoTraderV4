@@ -56,6 +56,7 @@ public class Trading212ApplicationTests
             ["Trading212:UseDemoData"] = "true",
             ["Trading212:ApiKey"] = string.Empty,
             ["Trading212:ApiSecret"] = string.Empty,
+            ["ConnectionStrings:DefaultConnection"] = string.Empty,
             ["Database:UseInMemory"] = null,
             ["Database:InMemoryDatabaseName"] = "Program_ConfigureServices_DemoDefault_Test"
         });
@@ -95,7 +96,8 @@ public class Trading212ApplicationTests
         {
             ["Trading212:UseDemoData"] = "true",
             ["Trading212:ApiKey"] = string.Empty,
-            ["Trading212:ApiSecret"] = string.Empty
+            ["Trading212:ApiSecret"] = string.Empty,
+            ["ConnectionStrings:DefaultConnection"] = string.Empty
         });
 
         Program.ConfigureServices(builder);
