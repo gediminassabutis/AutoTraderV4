@@ -19,6 +19,20 @@ public sealed class ApplicationDbContext : DbContext
     {
     }
 
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        NormalizeDateTimeOffsets();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    public override Task<int> SaveChangesAsync(
+        bool acceptAllChangesOnSuccess,
+        CancellationToken cancellationToken = default)
+    {
+        NormalizeDateTimeOffsets();
+        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<PortfolioPosition>(entity =>
@@ -154,6 +168,25 @@ public sealed class ApplicationDbContext : DbContext
             entity.Property(x => x.UpdatedUtc).IsRequired();
             entity.HasIndex(x => new { x.Ticker, x.CreatedUtc });
         });
+    }
+
+    private void NormalizeDateTimeOffsets()
+    {
+        foreach (var entry in ChangeTracker.Entries())
+        {
+            if (entry.State is not (EntityState.Added or EntityState.Modified))
+            {
+                continue;
+            }
+
+            foreach (var property in entry.Properties)
+            {
+                if (property.CurrentValue is DateTimeOffset value && value.Offset != TimeSpan.Zero)
+                {
+                    property.CurrentValue = value.ToUniversalTime();
+                }
+            }
+        }
     }
 }
 
