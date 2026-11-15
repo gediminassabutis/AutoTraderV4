@@ -173,20 +173,6 @@ public class ApiIntegrationTests
     }
 
     [Fact]
-    public async Task StrategyRecommendationEndpoint_DisablesSyntheticScorer()
-    {
-        await using var app = await TestWebApplication.CreateAsync();
-
-        using var response = await app.Client.PostAsJsonAsync("/api/strategies/recommend", new
-        {
-            symbol = "NVDA",
-            price = 132.40m
-        });
-
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
-    }
-
-    [Fact]
     public async Task MovingAverageEndpoint_ReturnsSellDecisionForDowntrend()
     {
         await using var app = await TestWebApplication.CreateAsync();

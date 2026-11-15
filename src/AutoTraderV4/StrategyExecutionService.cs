@@ -5,16 +5,13 @@ namespace AutoTraderV4;
 public sealed class StrategyExecutionService
 {
     private readonly ApplicationDbContext _context;
-    private readonly AuditLogService? _auditLogService;
     private readonly RiskGovernanceService? _riskGovernanceService;
 
     public StrategyExecutionService(
         ApplicationDbContext context,
-        AuditLogService? auditLogService = null,
         RiskGovernanceService? riskGovernanceService = null)
     {
         _context = context ?? throw new ArgumentNullException(nameof(context));
-        _auditLogService = auditLogService;
         _riskGovernanceService = riskGovernanceService;
     }
 
@@ -65,17 +62,12 @@ public sealed class StrategyExecutionService
             CreatedUtc = now
         });
 
-        if (_auditLogService is not null)
-        {
-            var recommendation = new StrategyEngineService().BuildRecommendation(decision.Ticker, decision.EntryPrice);
-            decision.ApplyAuditMetadata(
-                decision.TriggeringStrategy,
-                recommendation.SignalScores,
-                decision.ForecastOutput,
-                decision.RiskAssessment,
-                recommendation.Rating);
-            _auditLogService.Record(decision, decision.TriggeringStrategy, recommendation.SignalScores, decision.ForecastOutput, decision.RiskAssessment, recommendation.Rating);
-        }
+        decision.ApplyAuditMetadata(
+            decision.TriggeringStrategy,
+            decision.SignalScores,
+            decision.ForecastOutput,
+            decision.RiskAssessment,
+            decision.Rating);
 
         var orderRecord = decision.ToOrderExecutionRecord();
         _context.OrderExecutionRecords.Add(orderRecord);

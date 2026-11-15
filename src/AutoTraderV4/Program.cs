@@ -112,8 +112,6 @@ public partial class Program
         builder.Services.AddSingleton<MovingAverageStrategyService>();
         builder.Services.AddSingleton<WeightedStrategyScoringService>();
         builder.Services.AddScoped<IPortfolioDashboardService, PortfolioDashboardService>();
-        builder.Services.AddSingleton<StrategyEngineService>();
-        builder.Services.AddSingleton<AuditLogService>();
         builder.Services.AddSingleton<IMarketDataProvider, DemoMarketDataProvider>();
         builder.Services.AddSingleton<IMarketDataProvider, FallbackMarketDataProvider>();
         builder.Services.AddSingleton<IStocktwitsMcpToolClient, StocktwitsMcpToolClient>();
@@ -417,11 +415,6 @@ public partial class Program
             return Results.Ok(riskService.Evaluate(dashboard));
         });
 
-        app.MapGet("/api/audit-log", (AuditLogService auditLogService) =>
-        {
-            return Results.Ok(auditLogService.GetRecent());
-        });
-
         app.MapGet("/api/audit-logs", async (string? symbol, int? take, AuditLoggingService auditLoggingService, CancellationToken cancellationToken) =>
         {
             return Results.Ok(await auditLoggingService.GetRecentAsync(symbol, take ?? 50, cancellationToken));
@@ -529,19 +522,6 @@ public partial class Program
             return Results.Ok(new { risk = result, auditLogId = auditEntry.Id });
         });
 
-        app.MapPost("/api/strategies/recommend", (RecommendationRequest request) =>
-        {
-            if (string.IsNullOrWhiteSpace(request.Symbol))
-            {
-                return Results.BadRequest(new { error = "Ticker symbol is required." });
-            }
-
-            return Results.Problem(
-                title: "Strategy recommendations are unavailable.",
-                detail: "This scorer currently uses synthetic factor inputs; recommendations are disabled until verified market and strategy data are connected.",
-                statusCode: StatusCodes.Status503ServiceUnavailable);
-        });
-
         app.MapPost("/api/strategies/recommendations", async (StrategyEvaluationRequest request, WeightedStrategyEngineService strategyEngineService, RiskGovernanceService riskGovernanceService, AuditLoggingService auditLoggingService, CancellationToken cancellationToken) =>
         {
             var errors = request.Validate();
@@ -561,17 +541,6 @@ public partial class Program
                 AuditLogId = auditEntry.Id,
                 EvaluatedAtUtc = auditEntry.CreatedUtc
             });
-        });
-
-        app.MapPost("/api/trades/audit", (TradeDecision decision, AuditLogService auditLogService, StrategyEngineService strategyEngineService) =>
-        {
-            decision.Validate();
-            var recommendation = strategyEngineService.BuildRecommendation(decision.Ticker, decision.EntryPrice > 0m ? decision.EntryPrice : 100m);
-            var forecastOutput = decision.ForecastOutput;
-            var riskAssessment = string.IsNullOrWhiteSpace(decision.RiskAssessment) ? "Within trading constraints" : decision.RiskAssessment;
-            var recommendationText = string.IsNullOrWhiteSpace(decision.Recommendation) ? recommendation.Rating : decision.Recommendation;
-            auditLogService.Record(decision, decision.TriggeringStrategy, recommendation.SignalScores, forecastOutput, riskAssessment, recommendationText);
-            return Results.Ok(new { decision, recommendation });
         });
 
         app.MapPost("/api/strategies/evaluate", async (StrategySignal signal, StrategyExecutionService strategyExecutionService, CancellationToken cancellationToken) =>

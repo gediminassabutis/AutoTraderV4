@@ -212,7 +212,7 @@ public class Trading212ApplicationTests
             .Options;
 
         await using var context = new ApplicationDbContext(options);
-        var service = new StrategyExecutionService(context, new AuditLogService());
+        var service = new StrategyExecutionService(context);
 
         var result = await service.ExecuteAsync(new StrategySignal
         {
@@ -554,71 +554,5 @@ public class Trading212ApplicationTests
         Assert.True(result.DefensiveMode);
         Assert.NotNull(result.ReductionPlan);
         Assert.True(result.ReductionPlan.RequiresReduction || result.Warnings.Count > 0);
-    }
-
-    [Fact]
-    public void StrategyEngineService_BuildRecommendation_ReturnsHighConfidenceResult()
-    {
-        var service = new StrategyEngineService();
-
-        var recommendation = service.BuildRecommendation("NVDA", 132.40m);
-
-        Assert.Equal("NVDA", recommendation.Symbol);
-        Assert.True(recommendation.Confidence >= 75);
-        Assert.True(recommendation.RiskReward >= 2.5m);
-        Assert.Contains(recommendation.TopFactors, factor => factor.Contains("Strong", StringComparison.OrdinalIgnoreCase));
-    }
-
-    [Fact]
-    public void StrategyEngineService_BuildRecommendation_IncludesExplainableForecastMetadata()
-    {
-        var service = new StrategyEngineService();
-
-        var recommendation = service.BuildRecommendation("NVDA", 132.40m);
-
-        Assert.NotNull(recommendation.Forecast);
-        Assert.False(string.IsNullOrWhiteSpace(recommendation.ForecastSummary));
-        Assert.NotEmpty(recommendation.ModelOutputs);
-        Assert.Equal(recommendation.ForecastSummary, recommendation.Forecast.Summary);
-        Assert.Equal(recommendation.ModelOutputs.Count, recommendation.Forecast.ModelOutputs.Count);
-        Assert.All(recommendation.ModelOutputs, model =>
-        {
-            Assert.False(string.IsNullOrWhiteSpace(model.ModelName));
-            Assert.False(string.IsNullOrWhiteSpace(model.Rationale));
-            Assert.True(model.Weight > 0m);
-            Assert.InRange(model.Confidence, 0m, 100m);
-        });
-    }
-
-    [Fact]
-    public void AuditLogService_Record_SavesDecisionMetadata()
-    {
-        var service = new AuditLogService();
-        var decision = new TradeDecision
-        {
-            Ticker = "MSFT",
-            Quantity = 10m,
-            EntryPrice = 420m,
-            StopLoss = 396m,
-            TakeProfit = 460m,
-            Confidence = 88,
-            Rating = "Buy",
-            TriggeringStrategy = "weighted-strategy",
-            Recommendation = "Buy MSFT for tactical upside",
-            RiskAssessment = "Within limits",
-            ForecastOutput = "{\"oneDayReturnPercent\":1.2,\"fiveDayReturnPercent\":3.7}",
-            CreatedUtc = DateTimeOffset.UtcNow
-        };
-
-        service.Record(decision, decision.TriggeringStrategy, new Dictionary<string, decimal> { ["Trend"] = 86m }, decision.ForecastOutput, decision.RiskAssessment, decision.Recommendation);
-        var entries = service.GetRecent();
-
-        Assert.Single(entries);
-        Assert.Equal("MSFT", entries[0].Symbol);
-        Assert.Equal("weighted-strategy", entries[0].TriggeringStrategy);
-        Assert.Equal("Buy MSFT for tactical upside", entries[0].Recommendation);
-        Assert.Equal("Within limits", entries[0].RiskAssessment);
-        Assert.Contains("oneDayReturnPercent", entries[0].ForecastOutput, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(88, entries[0].Confidence);
     }
 }
