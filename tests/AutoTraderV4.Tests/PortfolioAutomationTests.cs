@@ -18,7 +18,6 @@ public sealed class PortfolioAutomationTests
         services.AddSingleton<IPortfolioRepository>(repository);
         services.AddSingleton<ITrading212Client, DemoTrading212Client>();
         services.AddSingleton<TimeProvider>(TimeProvider.System);
-        services.AddSingleton<StrategyEngineService>();
         services.AddSingleton<IMarketDataProvider, DemoMarketDataProvider>();
         services.AddScoped<MarketDataService>();
         services.AddScoped(provider => new PortfolioStateSyncService(

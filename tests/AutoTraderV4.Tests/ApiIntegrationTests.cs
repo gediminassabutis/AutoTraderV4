@@ -170,20 +170,11 @@ public class ApiIntegrationTests
         await using var scope = app.App.Services.CreateAsyncScope();
         var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         Assert.Equal(1, await context.StrategySignals.CountAsync());
-    }
 
-    [Fact]
-    public async Task StrategyRecommendationEndpoint_DisablesSyntheticScorer()
-    {
-        await using var app = await TestWebApplication.CreateAsync();
-
-        using var response = await app.Client.PostAsJsonAsync("/api/strategies/recommend", new
-        {
-            symbol = "NVDA",
-            price = 132.40m
-        });
-
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        var auditLogs = await app.Client.GetFromJsonAsync<JsonElement>("/api/audit-logs?symbol=META_US_EQ");
+        var auditLog = Assert.Single(auditLogs.EnumerateArray());
+        Assert.Equal("strategy-signal-evaluation", auditLog.GetProperty("eventType").GetString());
+        Assert.Equal("Buy", auditLog.GetProperty("side").GetString());
     }
 
     [Fact]
