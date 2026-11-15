@@ -234,6 +234,13 @@ public class Trading212ApplicationTests
         Assert.Equal(result.ForecastOutput, orderRecord.ForecastJson);
         Assert.Contains("Within trading constraints", orderRecord.RiskAssessmentJson, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(result.RecommendationSummary, orderRecord.RecommendationJson, StringComparison.OrdinalIgnoreCase);
+
+        var auditEntry = await context.TradeAuditEntries.SingleAsync();
+        Assert.Equal("strategy-signal-evaluation", auditEntry.EventType);
+        Assert.Equal("NVDA_US_EQ", auditEntry.Symbol);
+        Assert.Equal(result.TriggeringStrategy, auditEntry.StrategyName);
+        Assert.Equal(result.ConfidenceScore, auditEntry.ConfidenceScore);
+        Assert.Equal(orderRecord.RiskAssessmentJson, auditEntry.RiskAssessmentJson);
     }
 
     [Fact]

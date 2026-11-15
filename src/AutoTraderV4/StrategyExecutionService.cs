@@ -72,6 +72,28 @@ public sealed class StrategyExecutionService
         var orderRecord = decision.ToOrderExecutionRecord();
         _context.OrderExecutionRecords.Add(orderRecord);
 
+        // Persist the decision to the audit trail in the same save as the signal and order record.
+        _context.TradeAuditEntries.Add(new TradeAuditEntry
+        {
+            Id = Guid.NewGuid(),
+            EventType = "strategy-signal-evaluation",
+            Symbol = decision.Ticker.Trim().ToUpperInvariant(),
+            StrategyName = decision.TriggeringStrategy,
+            FinalScore = decision.FinalScore,
+            ConfidenceScore = decision.ConfidenceScore,
+            EntryPrice = decision.EntryPrice,
+            StopLoss = decision.StopLoss,
+            TakeProfit = decision.TakeProfit,
+            Quantity = decision.Quantity,
+            Side = decision.Side.ToString(),
+            OrderType = decision.OrderType.ToString(),
+            SignalScoresJson = orderRecord.SignalScoresJson,
+            ForecastJson = orderRecord.ForecastJson,
+            RiskAssessmentJson = orderRecord.RiskAssessmentJson,
+            RecommendationJson = orderRecord.RecommendationJson,
+            CreatedUtc = now
+        });
+
         await _context.SaveChangesAsync(cancellationToken);
 
         return decision;
