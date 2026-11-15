@@ -164,6 +164,9 @@ public interface IMarketDataProvider
     bool SupportsLiveData => false;
     TimeSpan MinimumRequestInterval => TimeSpan.FromMilliseconds(300);
 
+    /// <summary>False when the provider cannot quote the symbol, so it is skipped without spending a request slot.</summary>
+    bool Supports(string symbol) => true;
+
     Task<MarketDataContract?> GetAsync(string symbol, CancellationToken cancellationToken = default);
 }
 
@@ -391,6 +394,12 @@ public sealed class MarketDataService
         {
             try
             {
+                if (!provider.Supports(normalizedSymbol))
+                {
+                    providerFailures.Add($"{provider.GetType().Name}: symbol is not covered by this provider");
+                    continue;
+                }
+
                 var candidate = await GetFromProviderAsync(provider, normalizedSymbol, cancellationToken);
                 if (candidate is null)
                 {

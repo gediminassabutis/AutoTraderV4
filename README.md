@@ -8,6 +8,8 @@ A .NET 10 C# trading automation starter for the Trading 212 Public API, with dem
 - ASP.NET Core Web API endpoints
 - PostgreSQL persistence via Entity Framework Core
 - Optional Stocktwits MCP sentiment and stock-stat ingestion
+- Optional live US-equity quotes and daily bar history from Alpaca
+- Technical indicators (SMA, EMA, RSI, MACD, ATR, Bollinger Bands, VWAP, momentum, relative strength) computed from bar history
 - Weighted multi-strategy scoring engine with risk gates
 - Portfolio risk policy and defensive-mode validation
 - Unit tests covering auth, order behavior, and strategy/risk checks
@@ -71,6 +73,33 @@ The app falls back to demo data automatically when `Trading212:UseDemoData` is `
 On startup, the app begins a five-minute stock-tracking cycle. It syncs every `STOCK` instrument from Trading 212's accessible-instruments catalog into the persistent `TrackedStocks` table, preserving the full market-specific ticker and refreshing instrument metadata on later cycles. Newly discovered catalog entries remain in the database even when they are held or have appeared in order history; the `newStocks` response is a preview of up to 20 newly tracked, unheld/unordered stocks. Tick collection is bounded to 100 symbols or 45 seconds per cycle, and collected snapshots are persisted together. Each `IMarketDataProvider` sets its minimum request interval (300 ms by default); the tracker prioritizes held positions, then resumes from the least recently attempted symbols so a large catalog is covered over successive cycles rather than repeatedly restarting at the beginning. `LastMarketDataAttemptAtUtc` also advances on provider failures, preventing a broken symbol from starving the rest of the universe. The response reports `trackedStockCount`, `newlyTrackedStockCount`, `stockTicksCollected`, and `deferredStockTickCount`; it also indicates when the collection time budget was exhausted. If catalog discovery fails, saved stocks remain available for tick collection when a live provider is configured. Catalog errors are logged and returned as `newStockDiscoveryError` without stopping the rest of the tracking cycle. The stock universe is informational only—it does not score or trade every catalog instrument. Strategy price deltas are normalized against the fresh quote before scoring, and recommendations require fresh measured liquidity and spread, a classified sector, and portfolio risk approval including exposure reserved by earlier recommendations in the same scan. The service logs recommendations only; broker order submission is intentionally disabled until authenticated execution and complete risk telemetry are available.
 
 The built-in demo and fallback market-data providers return synthetic quotes. These quotes are explicitly non-actionable and are not counted as collected stock ticks: the tracker will not collect the research snapshots or generate buy recommendations until an `IMarketDataProvider` that advertises live data is configured. Held-position updates and buy recommendations additionally require fresh, non-synthetic data, with buy recommendations also requiring measured liquidity, spread, and sector metadata. The current readiness is available at `GET /api/market-data/status` and as an API/data-source alert on the dashboard.
+
+### Alpaca live market data and technical indicators
+
+The app can use the [Alpaca Market Data API](https://docs.alpaca.markets/docs/about-market-data-api) as its live `IMarketDataProvider`. It is off until both credentials are supplied; never commit them. In Windows PowerShell:
+
+```powershell
+$env:Alpaca__ApiKeyId = '...'
+$env:Alpaca__ApiSecretKey = '...'
+```
+
+or with user secrets from `src/AutoTraderV4`:
+
+```bash
+dotnet user-secrets set "Alpaca:ApiKeyId" "..."
+dotnet user-secrets set "Alpaca:ApiSecretKey" "..."
+```
+
+Optional settings: `Alpaca:Enabled` (default `true`; set `false` to keep the provider off), `Alpaca:Feed` (default `iex`, the free feed; `sip` needs a paid data plan), `Alpaca:MinimumRequestIntervalMilliseconds` (default `350`, under the free plan's 200 requests per minute), and `Alpaca:FreshnessSeconds` (default `300`).
+
+Behaviour to be aware of:
+
+- Alpaca covers US equities only. Trading 212 tickers ending in `_US_EQ` are mapped to the Alpaca symbol (`BRK_B_US_EQ` becomes `BRK.B`); other instruments are skipped without spending a request.
+- A quote is fresh for five minutes after its last trade. Outside US market hours, and for thinly traded stocks on the IEX feed, quotes are reported stale and are not actionable.
+- The liquidity score is derived from traded value on the configured feed. IEX carries only a fraction of consolidated volume, so it understates liquidity and the risk gate rejects more candidates than it would on `sip`.
+- Alpaca does not supply sector classifications, so buy recommendations are still limited to symbols with a known sector mapping.
+
+With Alpaca configured, `GET /api/indicators/{symbol}` returns indicators computed from about 220 daily bars (cached for an hour): SMA 20/50/200, EMA 12/26, RSI 14, MACD, ATR 14, Bollinger Bands, 20-day VWAP, 21/63/126-day momentum, average volume, and 63-day return relative to SPY. A value is `null` when there is not enough history to measure it. The indicators are not yet fed into the strategy engine or the buy scanner.
 
 ### Stocktwits MCP sentiment and stock stats
 
@@ -160,6 +189,7 @@ The automated suite now includes:
 - `GET /api/dashboard/summary`
 - `GET /api/watchlist`
 - `GET /api/market-data/status`
+- `GET /api/indicators/{symbol}`
 - `GET /api/settings/stocktwits-mcp`
 - `PUT /api/settings/stocktwits-mcp`
 - `GET /api/sentiment/{symbol}`

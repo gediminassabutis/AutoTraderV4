@@ -1,5 +1,6 @@
 using System.Net.Sockets;
 using System.Text.Json.Serialization;
+using AutoTraderV4.Indicators;
 using AutoTraderV4.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -112,6 +113,31 @@ public partial class Program
         builder.Services.AddSingleton<MovingAverageStrategyService>();
         builder.Services.AddSingleton<WeightedStrategyScoringService>();
         builder.Services.AddScoped<IPortfolioDashboardService, PortfolioDashboardService>();
+        // Registered ahead of the synthetic providers so live quotes are preferred when configured.
+        var alpacaOptions = builder.Configuration.GetSection(AlpacaOptions.SectionName).Get<AlpacaOptions>()
+            ?? new AlpacaOptions();
+        builder.Services.AddSingleton(alpacaOptions);
+        if (alpacaOptions.IsActive)
+        {
+            alpacaOptions.Validate();
+            builder.Services.AddHttpClient(
+                AlpacaOptions.HttpClientName,
+                client => AlpacaMarketDataProvider.ConfigureHttpClient(client, alpacaOptions));
+            builder.Services.AddSingleton(serviceProvider =>
+            {
+                var httpClientFactory = serviceProvider.GetRequiredService<IHttpClientFactory>();
+                return new AlpacaMarketDataProvider(
+                    () => httpClientFactory.CreateClient(AlpacaOptions.HttpClientName),
+                    alpacaOptions,
+                    serviceProvider.GetRequiredService<TimeProvider>());
+            });
+            builder.Services.AddSingleton<IMarketDataProvider>(serviceProvider =>
+                serviceProvider.GetRequiredService<AlpacaMarketDataProvider>());
+            builder.Services.AddSingleton<IPriceHistoryProvider>(serviceProvider =>
+                serviceProvider.GetRequiredService<AlpacaMarketDataProvider>());
+        }
+
+        builder.Services.AddSingleton<TechnicalIndicatorService>();
         builder.Services.AddSingleton<IMarketDataProvider, DemoMarketDataProvider>();
         builder.Services.AddSingleton<IMarketDataProvider, FallbackMarketDataProvider>();
         builder.Services.AddSingleton<IStocktwitsMcpToolClient, StocktwitsMcpToolClient>();
@@ -323,6 +349,35 @@ public partial class Program
 
         app.MapGet("/api/market-data/status", (MarketDataService marketDataService) =>
             Results.Ok(marketDataService.GetReadiness()));
+
+        app.MapGet("/api/indicators/{symbol}", async (
+            string symbol,
+            TechnicalIndicatorService indicatorService,
+            CancellationToken cancellationToken) =>
+        {
+            if (!indicatorService.HistoryProviderConfigured)
+            {
+                return Results.Problem(
+                    title: "No price-history provider is configured.",
+                    detail: $"Set {AlpacaOptions.SectionName}:ApiKeyId and {AlpacaOptions.SectionName}:ApiSecretKey to enable technical indicators.",
+                    statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
+
+            try
+            {
+                var snapshot = await indicatorService.GetAsync(symbol, cancellationToken);
+                return snapshot is null
+                    ? Results.NotFound(new { symbol, error = "No price history is available for this symbol." })
+                    : Results.Ok(snapshot);
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
+            {
+                return Results.Problem(
+                    title: "Price history could not be retrieved.",
+                    detail: exception.Message,
+                    statusCode: StatusCodes.Status502BadGateway);
+            }
+        });
 
         app.MapGet("/api/settings/stocktwits-mcp", (StocktwitsMcpOptions options) =>
             Results.Ok(new StocktwitsMcpSettings(options.Enabled)));

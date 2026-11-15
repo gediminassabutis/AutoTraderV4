@@ -178,6 +178,16 @@ public class ApiIntegrationTests
     }
 
     [Fact]
+    public async Task IndicatorsEndpoint_ReportsUnavailable_WhenNoHistoryProviderIsConfigured()
+    {
+        await using var app = await TestWebApplication.CreateAsync();
+
+        using var response = await app.Client.GetAsync("/api/indicators/AAPL");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+    }
+
+    [Fact]
     public async Task MovingAverageEndpoint_ReturnsSellDecisionForDowntrend()
     {
         await using var app = await TestWebApplication.CreateAsync();
