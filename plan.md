@@ -4,22 +4,34 @@ This plan translates the trading-agent requirements in [AGENTS.md](AGENTS.md) in
 
 ## 1. Repo assessment
 
-The repository already contains a strong starting point for a Trading 212 automation service:
+The platform plumbing is in place; the analysis core is not. Current state by area:
+
+**Implemented**
 
 - [src/AutoTraderV4/Program.cs](src/AutoTraderV4/Program.cs) wires the ASP.NET Core app, dependency injection, EF Core, and minimal API endpoints.
-- [src/AutoTraderV4/Trading212Client.cs](src/AutoTraderV4/Trading212Client.cs) implements the Trading 212 HTTP client and order submission flow.
-- [src/AutoTraderV4/ApplicationDbContext.cs](src/AutoTraderV4/ApplicationDbContext.cs) stores positions, market snapshots, and strategy records.
-- [src/AutoTraderV4/StrategyEvaluator.cs](src/AutoTraderV4/StrategyEvaluator.cs) and [src/AutoTraderV4/MovingAverageStrategy.cs](src/AutoTraderV4/MovingAverageStrategy.cs) provide the initial signal-to-decision pattern.
-- [tests/AutoTraderV4.Tests](tests/AutoTraderV4.Tests) already covers auth, order normalization, repository persistence, and simple strategy logic.
+- [src/AutoTraderV4/Trading212Client.cs](src/AutoTraderV4/Trading212Client.cs) implements the Trading 212 HTTP client with rate limiting, plus a demo client.
+- [src/AutoTraderV4/ApplicationDbContext.cs](src/AutoTraderV4/ApplicationDbContext.cs) stores positions, portfolio state, market snapshots, tracked stocks, sentiment records, strategy signals, order records, and audit entries.
+- [src/AutoTraderV4/RiskGovernanceService.cs](src/AutoTraderV4/RiskGovernanceService.cs) enforces position, sector, cash-reserve, daily-loss, and drawdown limits and blocks entries when risk telemetry is missing.
+- [src/AutoTraderV4/AuditLoggingService.cs](src/AutoTraderV4/AuditLoggingService.cs) persists the audit trail served by `/api/audit-logs`.
+- [src/AutoTraderV4/Services/StockTrackingService.cs](src/AutoTraderV4/Services/StockTrackingService.cs) and the background service run the five-minute tracking cycle.
+- [src/AutoTraderV4/Services/SentimentService.cs](src/AutoTraderV4/Services/SentimentService.cs) ingests sentiment, optionally from the Stocktwits MCP server.
+- [ui](ui) is the React/Recharts dashboard, built into `src/AutoTraderV4/wwwroot`; [src/AutoTraderV4.WindowsDesktop](src/AutoTraderV4.WindowsDesktop) is a WPF client for the same API.
+- [tests/AutoTraderV4.Tests](tests/AutoTraderV4.Tests) covers the client, persistence, risk checks, tracking cycle, and API endpoints; CI builds and tests on pull requests.
 
-The main gaps relative to [AGENTS.md](AGENTS.md) are:
+**Partially implemented**
 
-- no multi-source market data pipeline for price, fundamentals, news, and sentiment
-- no weighted multi-strategy scoring engine beyond the simple moving-average baseline
-- no forecast ensemble for 1D/5D/30D/90D horizons
-- no portfolio risk engine or defensive mode logic
-- no React dashboard, alerting, or audit trail beyond application logs
-- no explicit handling for the full trade lifecycle required by the AGENTS specification
+- [src/AutoTraderV4/StrategyEngineService.cs](src/AutoTraderV4/StrategyEngineService.cs) (`WeightedStrategyEngineService`) implements the AGENTS weighting and factor breakdown, but only scores inputs supplied by the API caller. Nothing computes those inputs.
+- [src/AutoTraderV4/StrategyEvaluator.cs](src/AutoTraderV4/StrategyEvaluator.cs), [src/AutoTraderV4/MovingAverageStrategy.cs](src/AutoTraderV4/MovingAverageStrategy.cs), and [src/AutoTraderV4/StrategyExecutionService.cs](src/AutoTraderV4/StrategyExecutionService.cs) are the original single-signal path. They are still the only producer of the strategy signals the buy scanner reads, and only run on a manual API call.
+- [src/AutoTraderV4/PortfolioRiskService.cs](src/AutoTraderV4/PortfolioRiskService.cs) and [src/AutoTraderV4/WeightedStrategyScoringService.cs](src/AutoTraderV4/WeightedStrategyScoringService.cs) overlap with the services above and should be consolidated into them.
+- Broker order submission is intentionally disabled (`POST /api/orders` returns 501); position reviews only recommend exits.
+
+**Main gaps relative to [AGENTS.md](AGENTS.md)**
+
+- no live market-data provider: the only `IMarketDataProvider` implementations return synthetic quotes, which are blocked from trading, so the scan and tick-collection steps never run
+- no indicator calculation (RSI, MACD, moving averages, ATR, relative strength) and no fundamentals or macro feed
+- the buy scanner in `Services/PortfolioAutomationService.cs` scores a single price-delta value instead of using the weighted multi-factor engine
+- no forecasting: the earlier placeholder forecast service was removed, and no model-based forecast exists
+- no automated signal generation, order execution, or exit handling
 
 ## 2. Agent set for execution
 
@@ -100,9 +112,9 @@ Tasks:
 
 Key files to evolve:
 
-- [src/AutoTraderV4/StrategyEvaluator.cs](src/AutoTraderV4/StrategyEvaluator.cs)
-- [src/AutoTraderV4/MovingAverageStrategy.cs](src/AutoTraderV4/MovingAverageStrategy.cs)
-- [src/AutoTraderV4/StrategyExecutionService.cs](src/AutoTraderV4/StrategyExecutionService.cs)
+- [src/AutoTraderV4/StrategyEngineService.cs](src/AutoTraderV4/StrategyEngineService.cs) (`WeightedStrategyEngineService`, the engine to keep)
+- [src/AutoTraderV4/Services/PortfolioAutomationService.cs](src/AutoTraderV4/Services/PortfolioAutomationService.cs) (replace the single-value scoring in the buy scanner)
+- [src/AutoTraderV4/StrategyEvaluator.cs](src/AutoTraderV4/StrategyEvaluator.cs), [src/AutoTraderV4/MovingAverageStrategy.cs](src/AutoTraderV4/MovingAverageStrategy.cs), and [src/AutoTraderV4/StrategyExecutionService.cs](src/AutoTraderV4/StrategyExecutionService.cs) (retire once the weighted engine produces signals)
 
 Acceptance criteria:
 
@@ -124,7 +136,7 @@ Tasks:
 
 Suggested additions:
 
-- `src/AutoTraderV4/Services/ForecastingService.cs`
+- a forecasting service under `src/AutoTraderV4/Services/` backed by real models (none exists today; start with a simple statistical baseline and never return hardcoded values)
 - `src/AutoTraderV4/Services/RecommendationBuilder.cs`
 
 Acceptance criteria:
@@ -145,9 +157,13 @@ Tasks:
 4. Support stop-loss, trailing stop, and take-profit logic aligned to valid execution policies.
 5. Validate liquidity and spread before trade execution.
 
+Key files to evolve:
+
+- [src/AutoTraderV4/RiskGovernanceService.cs](src/AutoTraderV4/RiskGovernanceService.cs) (the risk gate to keep)
+- [src/AutoTraderV4/PortfolioRiskService.cs](src/AutoTraderV4/PortfolioRiskService.cs) (fold into `RiskGovernanceService`)
+
 Suggested additions:
 
-- `src/AutoTraderV4/Services/PortfolioRiskService.cs`
 - `src/AutoTraderV4/Services/PositionSizingService.cs`
 
 Acceptance criteria:
@@ -192,10 +208,10 @@ Tasks:
 4. Surface alerts for executed trades, risk warnings, rebalance events, and data-source failures.
 5. Create a watchlist ranked by confidence score with risk and forecast metrics.
 
-Suggested additions:
+Key files to evolve:
 
-- `src/AutoTraderV4.Web/` or a front-end workspace under `src/` for a React app
-- `src/AutoTraderV4/Endpoints/PortfolioDashboardEndpoints.cs` or equivalent API endpoints
+- [ui/src/App.jsx](ui/src/App.jsx) (the React dashboard)
+- [src/AutoTraderV4/Services/PortfolioDashboardService.cs](src/AutoTraderV4/Services/PortfolioDashboardService.cs) (the `/api/dashboard` payload)
 
 Acceptance criteria:
 
@@ -244,4 +260,10 @@ This project is considered complete when it can:
 
 ## 6. Immediate next step
 
-The next concrete move is to implement the risk and data layers first, because they are the gating dependencies for all AGENTS.md features. Once the market-data contract and portfolio-risk service are in place, the strategy and dashboard layers can be built against a stable platform.
+The risk, persistence, and dashboard layers exist, so the gating dependency is now real data. In order:
+
+1. Add a live `IMarketDataProvider` that supplies quotes and bar history.
+2. Compute the technical indicators from that history and persist them with each snapshot.
+3. Feed `WeightedStrategyEngineService` from the tracking cycle so it generates signals automatically, and replace the single-value scoring in the buy scanner.
+4. Consolidate the overlapping risk and scoring services, then retire the single-signal path.
+5. Add forecasting and automated execution only after the steps above produce verified, risk-approved recommendations.
