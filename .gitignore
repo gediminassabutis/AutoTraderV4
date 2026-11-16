@@ -26,3 +26,9 @@ node_modules/
 # OS files
 Thumbs.db
 .DS_Store
+
+# Local weekly bar store
+src/AutoTraderV4/data/
+*.db
+*.db-shm
+*.db-wal

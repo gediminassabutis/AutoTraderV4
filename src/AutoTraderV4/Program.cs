@@ -2,6 +2,7 @@ using System.Net.Sockets;
 using System.Text.Json.Serialization;
 using AutoTraderV4.Indicators;
 using AutoTraderV4.Services;
+using AutoTraderV4.Weekly;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -135,9 +136,33 @@ public partial class Program
                 serviceProvider.GetRequiredService<AlpacaMarketDataProvider>());
             builder.Services.AddSingleton<IPriceHistoryProvider>(serviceProvider =>
                 serviceProvider.GetRequiredService<AlpacaMarketDataProvider>());
+            builder.Services.AddSingleton<IDailyBarSource>(serviceProvider =>
+                serviceProvider.GetRequiredService<AlpacaMarketDataProvider>());
+            builder.Services.AddSingleton<BarSyncService>();
         }
 
         builder.Services.AddSingleton<TechnicalIndicatorService>();
+
+        var weeklyOptions = builder.Configuration.GetSection(WeeklyOptions.SectionName).Get<WeeklyOptions>()
+            ?? new WeeklyOptions();
+        weeklyOptions.Validate();
+        builder.Services.AddSingleton(weeklyOptions);
+        var barStorePath = Path.IsPathRooted(weeklyOptions.BarStorePath)
+            ? weeklyOptions.BarStorePath
+            : Path.Combine(builder.Environment.ContentRootPath, weeklyOptions.BarStorePath);
+        builder.Services.AddDbContextFactory<BarStoreDbContext>(options =>
+        {
+            var directory = Path.GetDirectoryName(barStorePath);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            options.UseSqlite($"Data Source={barStorePath}");
+        });
+        builder.Services.AddSingleton<BarStore>();
+        builder.Services.AddSingleton<StrategyFactory>();
+        builder.Services.AddSingleton<WeeklyService>();
         builder.Services.AddSingleton<IMarketDataProvider, DemoMarketDataProvider>();
         builder.Services.AddSingleton<IMarketDataProvider, FallbackMarketDataProvider>();
         builder.Services.AddSingleton<IStocktwitsMcpToolClient, StocktwitsMcpToolClient>();
@@ -376,6 +401,68 @@ public partial class Program
                     title: "Price history could not be retrieved.",
                     detail: exception.Message,
                     statusCode: StatusCodes.Status502BadGateway);
+            }
+        });
+
+        app.MapGet("/api/weekly/strategies", () => Results.Ok(StrategyFactory.Names));
+
+        app.MapPost("/api/weekly/bars/sync", async (
+            bool? fullRefresh,
+            IServiceProvider services,
+            CancellationToken cancellationToken) =>
+        {
+            var syncService = services.GetService<BarSyncService>();
+            if (syncService is null)
+            {
+                return Results.Problem(
+                    title: "No daily-bar source is configured.",
+                    detail: $"Set {AlpacaOptions.SectionName}:ApiKeyId and {AlpacaOptions.SectionName}:ApiSecretKey to download bars.",
+                    statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
+
+            try
+            {
+                return Results.Ok(await syncService.SyncAsync(fullRefresh ?? false, cancellationToken));
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
+            {
+                return Results.Problem(
+                    title: "Daily bars could not be downloaded.",
+                    detail: exception.Message,
+                    statusCode: StatusCodes.Status502BadGateway);
+            }
+        });
+
+        app.MapGet("/api/weekly/scores", async (DateOnly? asOf, WeeklyService weeklyService, CancellationToken cancellationToken) =>
+            Results.Ok(await weeklyService.GetScoresAsync(asOf, cancellationToken)));
+
+        app.MapPost("/api/weekly/backtest", async (
+            WeeklyBacktestRequest request,
+            WeeklyService weeklyService,
+            CancellationToken cancellationToken) =>
+        {
+            try
+            {
+                return Results.Ok(await weeklyService.RunBacktestAsync(request, cancellationToken));
+            }
+            catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+            {
+                return Results.BadRequest(new { error = exception.Message });
+            }
+        });
+
+        app.MapPost("/api/weekly/walk-forward", async (
+            WeeklyWalkForwardRequest request,
+            WeeklyService weeklyService,
+            CancellationToken cancellationToken) =>
+        {
+            try
+            {
+                return Results.Ok(await weeklyService.RunWalkForwardAsync(request, cancellationToken));
+            }
+            catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+            {
+                return Results.BadRequest(new { error = exception.Message });
             }
         });
 

@@ -188,6 +188,18 @@ public class ApiIntegrationTests
     }
 
     [Fact]
+    public async Task WeeklyEndpoints_ListStrategies_AndReportMissingBarSource()
+    {
+        await using var app = await TestWebApplication.CreateAsync();
+
+        var strategies = await app.Client.GetFromJsonAsync<string[]>("/api/weekly/strategies");
+        using var sync = await app.Client.PostAsync("/api/weekly/bars/sync", null);
+
+        Assert.Equal(["TrendFollowing", "ShortTermReversal", "MarketRegime"], strategies!);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, sync.StatusCode);
+    }
+
+    [Fact]
     public async Task MovingAverageEndpoint_ReturnsSellDecisionForDowntrend()
     {
         await using var app = await TestWebApplication.CreateAsync();

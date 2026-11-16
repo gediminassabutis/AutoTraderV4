@@ -101,6 +101,20 @@ Behaviour to be aware of:
 
 With Alpaca configured, `GET /api/indicators/{symbol}` returns indicators computed from about 220 daily bars (cached for an hour): SMA 20/50/200, EMA 12/26, RSI 14, MACD, ATR 14, Bollinger Bands, 20-day VWAP, 21/63/126-day momentum, average volume, and 63-day return relative to SPY. A value is `null` when there is not enough history to measure it. The indicators are not yet fed into the strategy engine or the buy scanner.
 
+### Weekly strategies and backtester
+
+This is the new direction for the project: hold for a week, score every stock with several independent strategies, and prove each strategy on history before it trades. It runs beside the older five-minute pipeline, which it is intended to replace.
+
+- **Strategies.** Each one evaluates a single stock and returns its own index from 0 (strong sell signal) through 50 (neutral) to 100 (strong buy signal). The indices are never combined. Implemented so far: `TrendFollowing` (short moving average against long, and price against the short average), `ShortTermReversal` (last week's losers score high) and `MarketRegime` (the benchmark against its 200-day average; the same value for every stock, used as a filter on buys).
+- **No look-ahead.** A strategy is handed only bars dated on or before the scoring date; later bars are not reachable from the data it receives.
+- **Data.** `POST /api/weekly/bars/sync` downloads daily bars from Alpaca for `Weekly:Universe:Symbols` plus the benchmark into a local SQLite file (`Weekly:BarStorePath`), several symbols per request. Later runs append only new sessions. Bars are split- and dividend-adjusted at download time, so after a stock split run it with `?fullRefresh=true`. Requires the Alpaca credentials above.
+- **Scores.** `GET /api/weekly/scores?asOf=2026-01-30` returns every strategy's index for each stock that passes the universe filters (minimum price and average traded value) on that date. Without `asOf` it uses the latest stored session.
+- **Backtest.** `POST /api/weekly/backtest` with `{ "strategy": "TrendFollowing" }` replays history week by week: rank on data up to the last session of a week, hold the top `TopN` stocks scoring above `MinimumScore`, fill at the open of the next week's first session, sell what drops out, and subtract slippage and commission. Optional fields: `parameters` (overrides for the strategy's configured parameters), `startDate`, `endDate`, `topN`, `minimumScore`, `initialCapital`, `commissionPerOrder`, `slippageBps`, `useRegimeFilter`. The report gives total and annualised return, maximum drawdown, win rate, number of trades, the same period's buy-and-hold result for the benchmark, the equity curve and every trade.
+- **Walk-forward.** `POST /api/weekly/walk-forward` with `{ "strategy": "TrendFollowing", "trainWeeks": 104, "testWeeks": 26, "variants": [ { "shortPeriod": 20, "longPeriod": 100 }, { "shortPeriod": 50, "longPeriod": 200 } ] }` picks the best variant on each training period and measures it on the following period only.
+- **Warnings.** Every report states that the universe is today's symbol list (survivorship bias), and flags short periods, too few trades, and results that look too good as possible overfitting or look-ahead bias.
+
+All parameters live under the `Weekly` section of `appsettings.json`. Nothing in this module places orders.
+
 ### Stocktwits MCP sentiment and stock stats
 
 The app can launch the official [Stocktwits MCP server](https://github.com/stocktwits/stocktwits-mcp) over stdio. It is disabled by default. To enable it in Windows PowerShell:
@@ -190,6 +204,11 @@ The automated suite now includes:
 - `GET /api/watchlist`
 - `GET /api/market-data/status`
 - `GET /api/indicators/{symbol}`
+- `GET /api/weekly/strategies`
+- `POST /api/weekly/bars/sync`
+- `GET /api/weekly/scores`
+- `POST /api/weekly/backtest`
+- `POST /api/weekly/walk-forward`
 - `GET /api/settings/stocktwits-mcp`
 - `PUT /api/settings/stocktwits-mcp`
 - `GET /api/sentiment/{symbol}`

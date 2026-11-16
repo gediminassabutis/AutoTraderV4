@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Net;
 using System.Text.Json;
 using AutoTraderV4.Indicators;
+using AutoTraderV4.Weekly;
 
 namespace AutoTraderV4.Services;
 
@@ -98,7 +99,7 @@ public static class AlpacaSymbol
 /// <summary>
 /// Live US-equity quotes and daily bar history from the Alpaca Market Data API.
 /// </summary>
-public sealed class AlpacaMarketDataProvider : IMarketDataProvider, IPriceHistoryProvider
+public sealed class AlpacaMarketDataProvider : IMarketDataProvider, IPriceHistoryProvider, IDailyBarSource
 {
     public const string Name = "alpaca";
 
@@ -271,6 +272,102 @@ public sealed class AlpacaMarketDataProvider : IMarketDataProvider, IPriceHistor
         while (!string.IsNullOrEmpty(pageToken));
 
         return bars;
+    }
+
+    /// <summary>
+    /// Downloads daily bars for several symbols per request, following pagination and pausing
+    /// <see cref="MinimumRequestInterval"/> between requests to stay inside the rate limit.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, IReadOnlyList<DailyBar>>> GetDailyBarsAsync(
+        IReadOnlyCollection<string> symbols,
+        DateOnly start,
+        DateOnly end,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(symbols);
+        var result = new Dictionary<string, List<DailyBar>>(StringComparer.OrdinalIgnoreCase);
+        var alpacaSymbols = symbols
+            .Select(AlpacaSymbol.FromTicker)
+            .Where(symbol => symbol is not null)
+            .Cast<string>()
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (alpacaSymbols.Length == 0 || start > end)
+        {
+            return new Dictionary<string, IReadOnlyList<DailyBar>>();
+        }
+
+        string? pageToken = null;
+        var firstRequest = true;
+        do
+        {
+            if (!firstRequest && MinimumRequestInterval > TimeSpan.Zero)
+            {
+                await Task.Delay(MinimumRequestInterval, _timeProvider, cancellationToken);
+            }
+
+            firstRequest = false;
+            var path =
+                $"v2/stocks/bars?symbols={Uri.EscapeDataString(string.Join(',', alpacaSymbols))}&timeframe=1Day"
+                + $"&start={start:yyyy-MM-dd}&end={end:yyyy-MM-dd}&limit=10000&adjustment=all&sort=asc"
+                + $"&feed={Uri.EscapeDataString(_options.Feed)}"
+                + (pageToken is null ? string.Empty : $"&page_token={Uri.EscapeDataString(pageToken)}");
+            using var document = await GetJsonAsync(path, cancellationToken);
+            if (document is null)
+            {
+                break;
+            }
+
+            var root = document.RootElement;
+            if (root.TryGetProperty("bars", out var barsElement) && barsElement.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var symbolBars in barsElement.EnumerateObject())
+                {
+                    if (symbolBars.Value.ValueKind != JsonValueKind.Array)
+                    {
+                        continue;
+                    }
+
+                    if (!result.TryGetValue(symbolBars.Name, out var list))
+                    {
+                        list = [];
+                        result[symbolBars.Name] = list;
+                    }
+
+                    foreach (var bar in symbolBars.Value.EnumerateArray())
+                    {
+                        var timestamp = GetTimestamp(bar, "t");
+                        var open = GetDecimal(bar, "o");
+                        var high = GetDecimal(bar, "h");
+                        var low = GetDecimal(bar, "l");
+                        var close = GetDecimal(bar, "c");
+                        if (timestamp is null || open is not > 0m || high is null || low is null || close is not > 0m)
+                        {
+                            continue;
+                        }
+
+                        // Alpaca stamps a daily bar at midnight New York time, which falls on the same date in UTC.
+                        list.Add(new DailyBar(
+                            DateOnly.FromDateTime(timestamp.Value.UtcDateTime),
+                            open.Value,
+                            high.Value,
+                            low.Value,
+                            close.Value,
+                            GetDecimal(bar, "v") ?? 0m));
+                    }
+                }
+            }
+
+            pageToken = root.TryGetProperty("next_page_token", out var token) && token.ValueKind == JsonValueKind.String
+                ? token.GetString()
+                : null;
+        }
+        while (!string.IsNullOrEmpty(pageToken));
+
+        return result.ToDictionary(
+            item => item.Key,
+            item => (IReadOnlyList<DailyBar>)item.Value,
+            StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>
